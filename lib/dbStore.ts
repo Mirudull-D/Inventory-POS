@@ -289,15 +289,33 @@ export const dbStore = {
     // For simplicity, we'll do sequential awaits which is fine for this scale,
     // or batch them if possible. Let's do sequential for clarity.
 
-    // 1. Upsert Customer
-    const customer = await this.upsertCustomer(payload.customerName, payload.customerPhone);
+    const productIds = Array.from(
+      new Set(
+        payload.items
+          .filter((i) => i.product_id)
+          .map((i) => i.product_id as string)
+      )
+    );
 
-    // 2. FIFO Stock Deduction and split items
+    // Concurrently upsert customer and fetch batches for all products in 1 roundtrip
+    const [customer, allBatches] = await Promise.all([
+      this.upsertCustomer(payload.customerName, payload.customerPhone),
+      productIds.length > 0
+        ? sql`
+            SELECT * FROM product_batches
+            WHERE product_id = ANY(${productIds}) AND stock_quantity > 0
+            ORDER BY arrived_at ASC
+          `
+        : Promise.resolve([]),
+    ]);
+
+    // FIFO Stock Deduction and split items in memory
+    const batchList = [...(allBatches as ProductBatch[])];
     const finalOrderItems: Omit<OrderItemRow, 'id'>[] = [];
+    const batchUpdates: { id: string; deduction: number }[] = [];
 
     for (const item of payload.items) {
       if (!item.product_id) {
-        // Custom item
         finalOrderItems.push({
           order_id: payload.orderId,
           product_id: null,
@@ -309,41 +327,29 @@ export const dbStore = {
         continue;
       }
 
-      // Fetch batches in FIFO order
-      const batches = await sql`
-        SELECT * FROM product_batches
-        WHERE product_id = ${item.product_id} AND stock_quantity > 0
-        ORDER BY arrived_at ASC
-      `;
-
       let remaining = item.qty;
+      const matchingBatches = batchList.filter(
+        (b) => b.product_id === item.product_id && b.stock_quantity > 0
+      );
 
-      for (const batch of batches) {
+      for (const batch of matchingBatches) {
         if (remaining <= 0) break;
-
-        const available = batch.stock_quantity;
-        const take = Math.min(remaining, available);
-
-        // Deduct from DB
-        await sql`
-          UPDATE product_batches
-          SET stock_quantity = stock_quantity - ${take}
-          WHERE id = ${batch.id}
-        `;
+        const take = Math.min(remaining, batch.stock_quantity);
+        batch.stock_quantity -= take;
+        batchUpdates.push({ id: batch.id, deduction: take });
 
         finalOrderItems.push({
           order_id: payload.orderId,
           product_id: item.product_id,
           batch_id: batch.id,
-          snapshot_name: item.name, // Keep the original name from cart
-          snapshot_price: Number(batch.selling_price), // Price from the specific batch consumed
+          snapshot_name: item.name,
+          snapshot_price: Number(batch.selling_price),
           quantity: take,
         });
 
         remaining -= take;
       }
 
-      // If we ran out of stock but still have remaining qty, just add it with the fallback price
       if (remaining > 0) {
         finalOrderItems.push({
           order_id: payload.orderId,
@@ -356,31 +362,40 @@ export const dbStore = {
       }
     }
 
-    // 3. Insert Order
-    await sql`
-      INSERT INTO orders (
-        id, customer_id, source, status, is_gst, subtotal, discount_type, discount_value,
-        discount_amount, gst_percentage, gst_amount, delivery_fee, grand_total,
-        cash_received, bill_date, created_at
-      ) VALUES (
-        ${payload.orderId}, ${customer.id}, ${payload.source}, 'COMPLETED', ${payload.isGst},
-        ${payload.grandTotal + payload.discountAmount - payload.gstAmount - payload.deliveryFee},
-        ${payload.discountType}, ${payload.discountValue}, ${payload.discountAmount},
-        ${payload.gstPercentage}, ${payload.gstAmount}, ${payload.deliveryFee},
-        ${payload.grandTotal}, ${payload.cashReceived}, ${payload.billDate}, now()
-      )
-    `;
-
-    // 4. Insert Order Items
-    for (const oi of finalOrderItems) {
-      await sql`
-        INSERT INTO order_items (
-          id, order_id, product_id, batch_id, snapshot_name, snapshot_price, quantity
+    // Insert order & execute all batch stock deductions concurrently
+    await Promise.all([
+      sql`
+        INSERT INTO orders (
+          id, customer_id, source, status, is_gst, subtotal, discount_type, discount_value,
+          discount_amount, gst_percentage, gst_amount, delivery_fee, grand_total,
+          cash_received, bill_date, created_at
         ) VALUES (
-          ${uid()}, ${oi.order_id}, ${oi.product_id}, ${oi.batch_id},
-          ${oi.snapshot_name}, ${oi.snapshot_price}, ${oi.quantity}
+          ${payload.orderId}, ${customer.id}, ${payload.source}, 'COMPLETED', ${payload.isGst},
+          ${payload.grandTotal + payload.discountAmount - payload.gstAmount - payload.deliveryFee},
+          ${payload.discountType}, ${payload.discountValue}, ${payload.discountAmount},
+          ${payload.gstPercentage}, ${payload.gstAmount}, ${payload.deliveryFee},
+          ${payload.grandTotal}, ${payload.cashReceived}, ${payload.billDate}, now()
         )
-      `;
+      `,
+      ...batchUpdates.map((u) =>
+        sql`UPDATE product_batches SET stock_quantity = stock_quantity - ${u.deduction} WHERE id = ${u.id}`
+      ),
+    ]);
+
+    // Insert all order items concurrently
+    if (finalOrderItems.length > 0) {
+      await Promise.all(
+        finalOrderItems.map((oi) =>
+          sql`
+            INSERT INTO order_items (
+              id, order_id, product_id, batch_id, snapshot_name, snapshot_price, quantity
+            ) VALUES (
+              ${uid()}, ${oi.order_id}, ${oi.product_id}, ${oi.batch_id},
+              ${oi.snapshot_name}, ${oi.snapshot_price}, ${oi.quantity}
+            )
+          `
+        )
+      );
     }
 
     return { orderId: payload.orderId };

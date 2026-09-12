@@ -1,183 +1,458 @@
 import { dbStore } from "@/lib/dbStore";
-import { ShoppingBag, MapPin, Phone, Printer, Copy, Check } from "lucide-react";
+import { ArrowLeft, FileText } from "lucide-react";
 import Link from "next/link";
-
-// Using a Client Component for the buttons inside a Server Component wrapper
 import { InvoiceActions } from "./InvoiceActions";
 
-export default async function InvoicePage({ params }: { params: Promise<{ id: string }> }) {
+// Clean Indian Number-to-Words Converter
+function numberToWords(num: number): string {
+  if (!num || num === 0) return "Zero Rupees Only";
+  const a = [
+    "",
+    "One",
+    "Two",
+    "Three",
+    "Four",
+    "Five",
+    "Six",
+    "Seven",
+    "Eight",
+    "Nine",
+    "Ten",
+    "Eleven",
+    "Twelve",
+    "Thirteen",
+    "Fourteen",
+    "Fifteen",
+    "Sixteen",
+    "Seventeen",
+    "Eighteen",
+    "Nineteen",
+  ];
+  const b = [
+    "",
+    "",
+    "Twenty",
+    "Thirty",
+    "Forty",
+    "Fifty",
+    "Sixty",
+    "Seventy",
+    "Eighty",
+    "Ninety",
+  ];
+
+  const formatChunk = (n: number): string => {
+    let str = "";
+    if (n >= 100) {
+      str += a[Math.floor(n / 100)] + " Hundred ";
+      n %= 100;
+    }
+    if (n >= 20) {
+      str +=
+        b[Math.floor(n / 10)] + (n % 10 !== 0 ? " " + a[n % 10] : "") + " ";
+    } else if (n > 0) {
+      str += a[n] + " ";
+    }
+    return str.trim();
+  };
+
+  const integerPart = Math.floor(Math.abs(num));
+  const decimalPart = Math.round((Math.abs(num) - integerPart) * 100);
+
+  let result = "";
+  let n = integerPart;
+
+  const crore = Math.floor(n / 10000000);
+  n %= 10000000;
+  const lakh = Math.floor(n / 100000);
+  n %= 100000;
+  const thousand = Math.floor(n / 1000);
+  n %= 1000;
+  const hundred = n;
+
+  if (crore > 0) result += formatChunk(crore) + " Crore ";
+  if (lakh > 0) result += formatChunk(lakh) + " Lakh ";
+  if (thousand > 0) result += formatChunk(thousand) + " Thousand ";
+  if (hundred > 0) result += formatChunk(hundred) + " ";
+
+  result = result.trim();
+  if (!result) result = "Zero";
+
+  let out = result + " Rupees";
+  if (decimalPart > 0) {
+    out += " and " + formatChunk(decimalPart) + " Paise";
+  }
+  return out + " Only";
+}
+
+export default async function InvoicePage({
+  params,
+  searchParams,
+}: {
+  params: Promise<{ id: string }>;
+  searchParams?: Promise<{ [key: string]: string | string[] | undefined }>;
+}) {
   const { id } = await params;
+  const resolvedSearchParams = searchParams ? await searchParams : {};
+  const isEmbed = resolvedSearchParams.embed === "true";
+
   const order = await dbStore.getOrderWithRelations(id);
 
   if (!order) {
     return (
-      <div className="min-h-screen bg-white flex flex-col items-center justify-center gap-4">
-        <p className="text-[#3F3F46] font-bold text-xl">Invoice Not Found</p>
-        <Link href="/" className="px-6 py-2 bg-[#FAFAFA] border border-[#3F3F46]/30 hover:bg-white rounded-lg text-[#000000] font-bold transition-colors">
-          Return to Dashboard
+      <div className="min-h-screen bg-zinc-50 flex flex-col items-center justify-center p-6 text-center font-sans text-zinc-800">
+        <div className="w-12 h-12 rounded-lg border border-zinc-200 bg-white flex items-center justify-center mb-3 text-zinc-500 shadow-xs">
+          <FileText className="w-6 h-6" />
+        </div>
+        <h1 className="text-base font-semibold text-zinc-900 mb-1">
+          Invoice Not Found
+        </h1>
+        <p className="text-xs text-zinc-500 max-w-sm mb-5">
+          The requested invoice identifier #{id} could not be found.
+        </p>
+        <Link
+          href="/pos/admin/secure/control-panel/raja-mobiles"
+          className="inline-flex items-center gap-2 px-4 py-2 bg-zinc-900 hover:bg-zinc-800 rounded-md text-white font-medium text-xs transition-colors"
+        >
+          <ArrowLeft className="w-3.5 h-3.5" /> Back to Dashboard
         </Link>
       </div>
     );
   }
 
+  const grandTotalNum = Number(order.grand_total) || 0;
+  const subtotalNum = Number(order.subtotal) || 0;
+  const discountNum = Number(order.discount_amount) || 0;
+  const gstAmountNum = Number(order.gst_amount) || 0;
+  const deliveryFeeNum = Number(order.delivery_fee) || 0;
+  const cashReceivedNum = Number(order.cash_received) || 0;
+  const changeReturned =
+    cashReceivedNum > grandTotalNum ? cashReceivedNum - grandTotalNum : 0;
+
+  const halfGstRate = order.gst_percentage ? order.gst_percentage / 2 : 9;
+  const halfGstAmount = gstAmountNum > 0 ? gstAmountNum / 2 : 0;
+
+  const formattedDate = new Date(order.bill_date).toLocaleDateString("en-IN", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+    timeZone: "Asia/Kolkata",
+  });
+
+  const formattedTime = new Date(order.created_at).toLocaleTimeString("en-IN", {
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: true,
+    timeZone: "Asia/Kolkata",
+  });
+
   return (
-    <div className="min-h-screen bg-[#FAFAFA] text-[#000000] font-sans py-12 px-4 print:p-0 print:bg-white flex flex-col items-center">
+    <div
+      className={`min-h-screen bg-zinc-100/70 text-zinc-900 font-sans ${
+        isEmbed ? "p-2 sm:p-4" : "py-8 px-3 sm:px-6"
+      } flex flex-col items-center print:bg-white print:p-0 print:m-0`}
+    >
+      {/* Print Stylesheet */}
       <style>{`
         @media print {
           @page {
-            margin: 10mm;
+            size: A4 portrait;
+            margin: 12mm 10mm;
           }
-          body {
-            background-color: white !important;
-            color: black !important;
+          html, body {
+            background: #ffffff !important;
+            color: #000000 !important;
             padding: 0 !important;
             margin: 0 !important;
+            -webkit-print-color-adjust: exact !important;
+            print-color-adjust: exact !important;
+          }
+          .print-hidden {
+            display: none !important;
+          }
+          .invoice-sheet {
+            border: none !important;
+            box-shadow: none !important;
+            max-width: 100% !important;
+            width: 100% !important;
+            padding: 0 !important;
           }
         }
       `}</style>
-      
-      {/* Top Navigation / Action Bar (Hidden when printing) */}
-      <div className="w-full max-w-3xl flex justify-end items-center mb-8 print:hidden gap-4">
-        <InvoiceActions />
-      </div>
 
-      {/* The Invoice Document — full-height flex column so the footer is pinned
-          to the bottom of the page instead of floating below the totals. */}
-      <div className="w-full max-w-3xl bg-white border border-[#3F3F46]/30 rounded-2xl shadow-xl print:shadow-none print:border-none print:rounded-none overflow-hidden flex flex-col min-h-[calc(100vh-8rem)] print:min-h-[calc(100vh-20mm)]">
-        
-        {/* Header Section */}
-        <div className="bg-[#ffffff] border-b border-[#e5e5e5] p-8 sm:p-12 print:p-6 flex flex-col items-center text-center relative">
-          <div className="absolute top-0 left-0 right-0 h-1.5 bg-gradient-to-r from-[#3F3F46] via-[#3F3F46] to-[#3F3F46]" />
-          <div className="w-24 h-24 flex items-center justify-center mb-3">
-            <img src="/logo.svg" alt="RAJA MOBILES Logo" className="max-w-full max-h-full object-contain" />
+      {/* Top Action Toolbar (Hidden in print and embed) */}
+      {!isEmbed && (
+        <div className="w-full max-w-[760px] mb-4 print:hidden">
+          <InvoiceActions
+            orderId={order.id}
+            customerName={order.customer_name}
+            customerPhone={order.customer_phone}
+            grandTotal={grandTotalNum}
+            isGst={order.is_gst}
+          />
+        </div>
+      )}
+
+      {/* Clean, Normal Professional Invoice Sheet */}
+      <div className="invoice-sheet w-full max-w-[760px] bg-white border border-zinc-200/80 shadow-xs rounded-sm p-6 sm:p-12 text-zinc-900 print:border-none print:shadow-none print:p-0 print:rounded-none">
+        {/* Header: Company & Invoice Info */}
+        <div className="flex flex-col sm:flex-row justify-between items-start gap-6 pb-6 border-b border-zinc-200">
+          <div className="flex items-start gap-3.5 sm:gap-4">
+            <div className="w-14 h-14 sm:w-16 sm:h-16 shrink-0 rounded-sm border border-zinc-200 overflow-hidden bg-white p-1">
+              <img
+                src="/logo.jpeg"
+                alt="RAJA MOBILES"
+                className="w-full h-full object-contain"
+              />
+            </div>
+            <div className="space-y-1">
+              <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-zinc-900">
+                RAJA MOBILES
+              </h1>
+              <p className="text-xs text-zinc-500 leading-relaxed max-w-xs">
+                CC Road, Naidumangalam, Tiruvannamalai, Tamil Nadu - 606802
+              </p>
+              <div className="text-xs text-zinc-600 pt-1 space-y-0.5">
+                <p>Phone: +91 97870 14340, +91 70101 41698</p>
+                <p>Email: rajamobilestvm@gmail.com</p>
+                {order.is_gst && (
+                  <p className="text-zinc-800 font-medium pt-0.5">
+                    GSTIN: <span className="font-mono">33AALCR8921B1Z9</span> • State Code: 33
+                  </p>
+                )}
+              </div>
+            </div>
           </div>
-          <h1 className="text-3xl font-black text-[#3F3F46] tracking-tight">RAJA MOBILES</h1>
-          <p className="text-xs text-[#3F3F46] font-bold tracking-wider mt-1 mb-1">Mobiles • Accessories • Recharges</p>
-          <p className="text-xs text-[#3F3F46] font-bold tracking-wider mb-4">
-            {order.is_gst ? "TAX INVOICE" : "INVOICE"}: {order.id}
-          </p>
 
-          <div className="flex flex-col items-center gap-2 text-sm text-[#333333] font-semibold">
-            <div className="text-center max-w-md leading-relaxed">
-              <span className="inline-block text-[#3F3F46] mr-1.5 align-middle -mt-0.5">
-                <MapPin className="w-3.5 h-3.5" />
+          <div className="sm:text-right space-y-1.5 shrink-0">
+            <div>
+              <span className="text-lg font-bold tracking-tight text-zinc-900 uppercase">
+                {order.is_gst ? "Tax Invoice" : "Invoice"}
               </span>
-              <span>No. 37/2, CC Road, Naidumangalam, Tiruvannamalai District - 606802</span>
+              <p className="text-xs font-mono text-zinc-500">#{order.id}</p>
             </div>
-            <div className="flex items-center gap-1.5 justify-center">
-              <Phone className="w-3.5 h-3.5 text-[#3F3F46] shrink-0" />
-              <span>97870143403 / 7010141698</span>
-            </div>
-          </div>
-        </div>
 
-        {/* Invoice Meta Data */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-8 p-8 sm:p-12 print:p-6 border-b border-[#e5e5e5]/50">
-          <div>
-            <h3 className="text-[10px] font-bold text-[#666666] uppercase tracking-[0.2em] mb-3">Billed To</h3>
-            <p className="text-base font-bold text-[#3F3F46]">{order.customer_name || "Guest Customer"}</p>
-            {order.customer_phone && (
-              <p className="text-sm text-[#555555] font-semibold mt-1">+91 {order.customer_phone}</p>
-            )}
-          </div>
-          <div className="sm:text-right flex flex-col sm:items-end">
-            <h3 className="text-[10px] font-bold text-[#666666] uppercase tracking-[0.2em] mb-3 self-start sm:self-auto">Order Details</h3>
-            <div className="inline-block text-left text-sm space-y-1">
-              <div className="flex gap-2">
-                <span className="text-[#666666] font-bold w-12 text-left sm:text-right">Date:</span>
-                <span className="text-[#000000] font-black">{new Date(order.bill_date).toLocaleDateString('en-IN', { year: 'numeric', month: 'long', day: 'numeric', timeZone: 'Asia/Kolkata' })}</span>
+            <div className="text-xs text-zinc-600 space-y-0.5 pt-1">
+              <div>
+                <span className="text-zinc-400">Date: </span>
+                <span className="text-zinc-800 font-medium">{formattedDate}</span>
               </div>
-              <div className="flex gap-2">
-                <span className="text-[#666666] font-bold w-12 text-left sm:text-right">Time:</span>
-                <span className="text-[#000000] font-black">{new Date(order.created_at).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Kolkata' })}</span>
+              <div>
+                <span className="text-zinc-400">Time: </span>
+                <span className="text-zinc-700">{formattedTime}</span>
               </div>
-              <div className="flex gap-2">
-                <span className="text-[#666666] font-bold w-12 text-left sm:text-right">Type:</span>
-                <span className="text-[#000000] font-black uppercase">{order.source} SALE</span>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        {/* Items Table */}
-        <div className="p-8 sm:p-12 print:py-4 print:px-6">
-          <div className="w-full overflow-x-auto scrollbar-thin pb-2">
-            <table className="w-full text-left border-collapse min-w-[400px]">
-              <thead>
-                <tr className="border-b-2 border-[#3F3F46]/30">
-                  <th className="py-4 text-[11px] font-bold text-[#666666] uppercase tracking-wider">Item Description</th>
-                  <th className="py-4 text-[11px] font-bold text-[#666666] uppercase tracking-wider text-center">Qty</th>
-                  <th className="py-4 text-[11px] font-bold text-[#666666] uppercase tracking-wider text-right">Price</th>
-                  <th className="py-4 text-[11px] font-bold text-[#666666] uppercase tracking-wider text-right">Total</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-[#e5e5e5]/40">
-                {order.items.map((item, index: number) => (
-                  <tr key={index} className="group">
-                    <td className="py-6 pr-4 print:py-3">
-                      <p className="text-sm font-bold text-[#3F3F46]">{item.snapshot_name}</p>
-                    </td>
-                    <td className="py-6 px-4 print:py-3 text-center text-sm font-bold text-[#000000]">{item.quantity}</td>
-                    <td className="py-6 pl-4 print:py-3 text-right text-sm font-bold text-[#000000]">₹{Number(item.snapshot_price).toLocaleString(undefined, {minimumFractionDigits: 2})}</td>
-                    <td className="py-6 pl-4 print:py-3 text-right text-sm font-black text-[#3F3F46]">₹{(Number(item.snapshot_price) * item.quantity).toLocaleString(undefined, {minimumFractionDigits: 2})}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
-
-        {/* Totals Section */}
-        <div className="bg-[#ffffff] border-t border-[#e5e5e5] p-8 sm:p-12 print:p-6 flex justify-end">
-
-            {/* Calculations */}
-            <div className="w-full sm:w-1/2 space-y-3">
-              {(Number(order.discount_amount) > 0 || Number(order.delivery_fee) > 0 || Number(order.gst_amount) > 0) && (
-                <div className="flex justify-between items-center text-sm">
-                  <span className="text-[#666666] font-bold uppercase tracking-wider">Subtotal</span>
-                  <span className="font-bold text-[#000000]">₹{Number(order.subtotal).toLocaleString(undefined, {minimumFractionDigits: 2})}</span>
-                </div>
-              )}
-              
-              {Number(order.discount_amount) > 0 && (
-                <div className="flex justify-between items-center text-sm">
-                  <span className="text-[#666666] font-bold uppercase tracking-wider">
-                    Discount {order.discount_type === 'PERCENT' ? `(${order.discount_value}%)` : ''}
-                  </span>
-                  <span className="font-bold text-[#27272A]">-₹{Number(order.discount_amount).toLocaleString(undefined, {minimumFractionDigits: 2})}</span>
-                </div>
-              )}
-
-              {Number(order.gst_amount) > 0 && (
-                <div className="flex justify-between items-center text-sm">
-                  <span className="text-[#666666] font-bold uppercase tracking-wider">
-                    GST ({order.gst_percentage}%)
-                  </span>
-                  <span className="font-bold text-[#000000]">₹{Number(order.gst_amount).toLocaleString(undefined, {minimumFractionDigits: 2})}</span>
-                </div>
-              )}
-
-              {Number(order.delivery_fee) > 0 && (
-                <div className="flex justify-between items-center text-sm">
-                  <span className="text-[#666666] font-bold uppercase tracking-wider">Delivery Fee</span>
-                  <span className="font-bold text-[#000000]">₹{Number(order.delivery_fee).toLocaleString(undefined, {minimumFractionDigits: 2})}</span>
-                </div>
-              )}
-
-              <div className="border-t border-[#3F3F46]/30 pt-4 mt-2 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-1 sm:gap-2">
-                <span className="text-sm font-black text-[#3F3F46] uppercase tracking-widest shrink-0">Total Amount</span>
-                <span className="text-3xl font-black text-[#3F3F46] self-end sm:self-auto leading-none mt-1 sm:mt-0">
-                  ₹{Number(order.grand_total).toLocaleString(undefined, {minimumFractionDigits: 2})}
+              <div>
+                <span className="text-zinc-400">Payment: </span>
+                <span className="text-zinc-800 font-medium uppercase">
+                  {order.source} • {order.status}
                 </span>
               </div>
             </div>
-        </div>
-        {/* Footer — mt-auto keeps it anchored to the bottom of the page */}
-        <div className="mt-auto border-t border-[#e5e5e5]/60 p-6 print:p-4 text-center bg-[#fafafa] flex flex-col items-center justify-center gap-1.5">
-          <p className="text-xs font-bold text-[#3F3F46] tracking-wider uppercase">Thank you for shopping!</p>
-          <p className="text-[9px] font-bold text-[#666666]/80 uppercase tracking-[0.15em]">Powered by Cenexa Systems @2026</p>
+          </div>
         </div>
 
+        {/* Billed To Details */}
+        <div className="py-5 border-b border-zinc-200 flex flex-col sm:flex-row justify-between items-start gap-4 text-xs">
+          <div>
+            <div className="text-[10px] font-semibold text-zinc-400 uppercase tracking-wider mb-1">
+              Billed To
+            </div>
+            <div className="text-sm font-semibold text-zinc-900">
+              {order.customer_name?.trim() ? order.customer_name : "Counter Customer"}
+            </div>
+            {order.customer_phone ? (
+              <div className="text-xs text-zinc-600 font-mono mt-0.5">
+                +91 {order.customer_phone}
+              </div>
+            ) : (
+              <div className="text-xs text-zinc-400 italic mt-0.5">
+                Walk-in Counter Sale
+              </div>
+            )}
+          </div>
+
+          <div className="sm:text-right text-xs text-zinc-500">
+            <div className="text-[10px] font-semibold text-zinc-400 uppercase tracking-wider mb-1">
+              Place of Supply
+            </div>
+            <div className="font-medium text-zinc-800">Tamil Nadu (33)</div>
+          </div>
+        </div>
+
+        {/* Particulars Table */}
+        <div className="py-4">
+          <table className="w-full text-left text-xs border-collapse">
+            <thead>
+              <tr className="border-b border-zinc-200 text-[10px] font-bold text-zinc-400 uppercase tracking-wider">
+                <th className="pb-3 w-8 text-center">#</th>
+                <th className="pb-3">Item Description</th>
+                {order.is_gst && <th className="pb-3 text-center w-16">HSN</th>}
+                <th className="pb-3 text-center w-12">Qty</th>
+                <th className="pb-3 text-right w-24">Rate (₹)</th>
+                <th className="pb-3 text-right w-28">Amount (₹)</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-zinc-100">
+              {order.items.map((item, index: number) => {
+                const unitPrice = Number(item.snapshot_price) || 0;
+                const itemTotal = unitPrice * item.quantity;
+                return (
+                  <tr key={index}>
+                    <td className="py-3 text-center text-zinc-400 font-mono">
+                      {index + 1}
+                    </td>
+                    <td className="py-3">
+                      <div className="font-medium text-zinc-900">
+                        {item.snapshot_name}
+                      </div>
+                    </td>
+                    {order.is_gst && (
+                      <td className="py-3 text-center font-mono text-zinc-500">
+                        8517
+                      </td>
+                    )}
+                    <td className="py-3 text-center text-zinc-800 font-medium">
+                      {item.quantity}
+                    </td>
+                    <td className="py-3 text-right font-mono text-zinc-600">
+                      {unitPrice.toLocaleString("en-IN", {
+                        minimumFractionDigits: 2,
+                        maximumFractionDigits: 2,
+                      })}
+                    </td>
+                    <td className="py-3 text-right font-mono font-semibold text-zinc-900">
+                      {itemTotal.toLocaleString("en-IN", {
+                        minimumFractionDigits: 2,
+                        maximumFractionDigits: 2,
+                      })}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+
+        {/* Totals & Breakdown */}
+        <div className="border-t border-zinc-200 pt-4 flex flex-col sm:flex-row justify-between items-start gap-8 text-xs">
+          {/* Left Side: Amount in Words, Bank / UPI & Terms */}
+          <div className="space-y-4 max-w-sm">
+            <div>
+              <div className="text-[10px] font-semibold text-zinc-400 uppercase tracking-wider mb-0.5">
+                Amount in Words
+              </div>
+              <div className="text-xs font-medium text-zinc-800 italic">
+                {numberToWords(grandTotalNum)}
+              </div>
+            </div>
+
+            {/* UPI info */}
+            <div className="text-xs text-zinc-600 space-y-0.5 pt-1">
+              <span className="text-[10px] font-semibold text-zinc-400 uppercase tracking-wider block">
+                Payment UPI
+              </span>
+              <span className="font-mono text-zinc-800">rajamobilestvm@upi</span>
+            </div>
+
+            {/* Cash details if applicable */}
+            {cashReceivedNum > 0 && (
+              <div className="text-xs text-zinc-600 space-y-0.5 pt-1">
+                <div>
+                  <span className="text-zinc-400">Cash Received: </span>
+                  <span className="font-mono font-medium text-zinc-800">
+                    ₹{cashReceivedNum.toLocaleString("en-IN", { minimumFractionDigits: 2 })}
+                  </span>
+                </div>
+                {changeReturned > 0 && (
+                  <div>
+                    <span className="text-zinc-400">Change Returned: </span>
+                    <span className="font-mono font-medium text-zinc-800">
+                      ₹{changeReturned.toLocaleString("en-IN", { minimumFractionDigits: 2 })}
+                    </span>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Simple Terms */}
+            <div className="text-[11px] text-zinc-500 leading-relaxed pt-2">
+              <p className="font-medium text-zinc-700 mb-0.5">Terms & Notes:</p>
+              <p>• Goods once sold can only be exchanged within 7 days with this invoice.</p>
+              <p>• Brand manufacturer warranty applies to phones and accessories.</p>
+            </div>
+          </div>
+
+          {/* Right Side: Financial Breakdown */}
+          <div className="w-full sm:w-64 space-y-2 text-xs">
+            <div className="flex justify-between text-zinc-600">
+              <span>Subtotal</span>
+              <span className="font-mono text-zinc-900">
+                ₹{subtotalNum.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+              </span>
+            </div>
+
+            {discountNum > 0 && (
+              <div className="flex justify-between text-zinc-600">
+                <span>
+                  Discount {order.discount_type === "PERCENT" ? `(${order.discount_value}%)` : ""}
+                </span>
+                <span className="font-mono text-zinc-900">
+                  − ₹{discountNum.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                </span>
+              </div>
+            )}
+
+            {order.is_gst && gstAmountNum > 0 && (
+              <>
+                <div className="flex justify-between text-zinc-600">
+                  <span>CGST ({halfGstRate.toFixed(1)}%)</span>
+                  <span className="font-mono text-zinc-800">
+                    ₹{halfGstAmount.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                  </span>
+                </div>
+                <div className="flex justify-between text-zinc-600">
+                  <span>SGST ({halfGstRate.toFixed(1)}%)</span>
+                  <span className="font-mono text-zinc-800">
+                    ₹{halfGstAmount.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                  </span>
+                </div>
+              </>
+            )}
+
+            {deliveryFeeNum > 0 && (
+              <div className="flex justify-between text-zinc-600">
+                <span>Delivery Fee</span>
+                <span className="font-mono text-zinc-800">
+                  ₹{deliveryFeeNum.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                </span>
+              </div>
+            )}
+
+            <div className="border-t border-zinc-900 pt-2.5 mt-2 flex justify-between items-baseline">
+              <span className="text-sm font-bold text-zinc-900 uppercase">
+                Total
+              </span>
+              <span className="font-mono text-lg font-bold text-zinc-900">
+                ₹{grandTotalNum.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+              </span>
+            </div>
+          </div>
+        </div>
+
+        {/* Signatory & Machine Note */}
+        <div className="mt-12 pt-6 border-t border-zinc-200 flex flex-col sm:flex-row justify-between items-start sm:items-end gap-6 text-xs">
+          <div className="text-[11px] text-zinc-400">
+            Thank you for your visit! • Raja Mobiles POS
+          </div>
+
+          <div className="sm:text-right space-y-1 self-end">
+            <div className="border-b border-zinc-300 w-36 mb-1 ml-auto"></div>
+            <div className="font-semibold text-zinc-800 text-xs">
+              Authorised Signatory
+            </div>
+            <div className="text-[10px] text-zinc-400">For Raja Mobiles</div>
+          </div>
+        </div>
       </div>
     </div>
   );

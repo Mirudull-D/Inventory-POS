@@ -10,15 +10,15 @@
   "scope": "/",
   "icons": [
     {
-      "src": "/logo.svg",
+      "src": "/logo.jpeg",
       "sizes": "any",
-      "type": "image/svg+xml",
+      "type": "image/jpeg",
       "purpose": "any"
     },
     {
-      "src": "/logo.svg",
+      "src": "/logo.jpeg",
       "sizes": "512x512",
-      "type": "image/svg+xml",
+      "type": "image/jpeg",
       "purpose": "maskable"
     }
   ]
