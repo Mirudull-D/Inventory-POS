@@ -3,6 +3,7 @@
 :root {
   --primary: #3F3F46;
   --secondary: #3F3F46;
+  --tertiary: #71717A;
 }
 
 body {
@@ -45,6 +46,7 @@ input[type="number"] {
 @theme {
   --color-primary: #3F3F46;
   --color-secondary: #3F3F46;
+  --color-tertiary: #71717A;
   --animate-float: float 3s ease-in-out infinite;
   --animate-swing: swing 2.5s ease-in-out infinite;
   --animate-pop: pop 2s ease-in-out infinite;

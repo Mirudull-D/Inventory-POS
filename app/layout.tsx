@@ -28,8 +28,8 @@ export const metadata: Metadata = {
     title: "RAJA MOBILES",
   },
   icons: {
-    icon: "/logo.svg",
-    apple: "/logo.svg",
+    icon: "/logo.jpeg",
+    apple: "/logo.jpeg",
   },
 };
 
@@ -48,7 +48,7 @@ export default function RootLayout({
         <meta name="apple-mobile-web-app-capable" content="yes" />
         <meta name="apple-mobile-web-app-status-bar-style" content="default" />
         <meta name="apple-mobile-web-app-title" content="RAJA MOBILES" />
-        <link rel="apple-touch-icon" href="/logo.svg" />
+        <link rel="apple-touch-icon" href="/logo.jpeg" />
       </head>
       <body className="min-h-full flex flex-col">
         {children}
