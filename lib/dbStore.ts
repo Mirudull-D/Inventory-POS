@@ -8,6 +8,7 @@ import {
   OrderItemRow,
   OrderWithRelations,
   CartItem,
+  Expense,
 } from './types';
 
 // Utility to generate a unique ID
@@ -213,6 +214,56 @@ export const dbStore = {
 
   async deleteOrder(id: string): Promise<void> {
     await sql`DELETE FROM orders WHERE id = ${id}`;
+  },
+
+  // EXPENSES
+  async listExpenses(): Promise<Expense[]> {
+    const rows = await sql`
+      SELECT * FROM expenses
+      ORDER BY expense_date DESC, created_at DESC
+    `;
+    return rows as Expense[];
+  },
+
+  async addExpense(input: {
+    title: string;
+    category: string;
+    amount: number;
+    payment_mode: string;
+    notes: string | null;
+    expense_date: string;
+  }): Promise<Expense> {
+    const id = uid();
+    const rows = await sql`
+      INSERT INTO expenses (id, title, category, amount, payment_mode, notes, expense_date)
+      VALUES (
+        ${id}, ${input.title}, ${input.category}, ${input.amount},
+        ${input.payment_mode}, ${input.notes}, ${input.expense_date}
+      )
+      RETURNING *
+    `;
+    return rows[0] as Expense;
+  },
+
+  async updateExpense(id: string, patch: Partial<Expense>): Promise<Expense | null> {
+    if (Object.keys(patch).length === 0) {
+      const rows = await sql`SELECT * FROM expenses WHERE id = ${id}`;
+      return rows.length > 0 ? (rows[0] as Expense) : null;
+    }
+
+    if (patch.title !== undefined) await sql`UPDATE expenses SET title = ${patch.title} WHERE id = ${id}`;
+    if (patch.category !== undefined) await sql`UPDATE expenses SET category = ${patch.category} WHERE id = ${id}`;
+    if (patch.amount !== undefined) await sql`UPDATE expenses SET amount = ${patch.amount} WHERE id = ${id}`;
+    if (patch.payment_mode !== undefined) await sql`UPDATE expenses SET payment_mode = ${patch.payment_mode} WHERE id = ${id}`;
+    if (patch.notes !== undefined) await sql`UPDATE expenses SET notes = ${patch.notes} WHERE id = ${id}`;
+    if (patch.expense_date !== undefined) await sql`UPDATE expenses SET expense_date = ${patch.expense_date} WHERE id = ${id}`;
+
+    const rows = await sql`SELECT * FROM expenses WHERE id = ${id}`;
+    return rows.length > 0 ? (rows[0] as Expense) : null;
+  },
+
+  async deleteExpense(id: string): Promise<void> {
+    await sql`DELETE FROM expenses WHERE id = ${id}`;
   },
 
   // FIFO DEDUCTION & ORDER SUBMISSION

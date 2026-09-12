@@ -68,6 +68,17 @@ export type OrderWithRelations = OrderRow & {
   items: OrderItemRow[];
 };
 
+export type Expense = {
+  id: string;
+  title: string;
+  category: string;
+  amount: number;
+  payment_mode: string; // CASH | UPI | CARD | BANK | OTHER
+  notes: string | null;
+  expense_date: string;
+  created_at: string;
+};
+
 export type CartItem = {
   id: string;
   product_id: string | null;

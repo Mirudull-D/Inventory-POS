@@ -11,7 +11,7 @@ const poppins = Poppins({
 });
 
 export const viewport: Viewport = {
-  themeColor: "#DC2626",
+  themeColor: "#3F3F46",
   width: "device-width",
   initialScale: 1,
   maximumScale: 1,
@@ -28,8 +28,8 @@ export const metadata: Metadata = {
     title: "RAJA MOBILES",
   },
   icons: {
-    icon: "/logo.png",
-    apple: "/logo.png",
+    icon: "/logo.svg",
+    apple: "/logo.svg",
   },
 };
 
@@ -48,7 +48,7 @@ export default function RootLayout({
         <meta name="apple-mobile-web-app-capable" content="yes" />
         <meta name="apple-mobile-web-app-status-bar-style" content="default" />
         <meta name="apple-mobile-web-app-title" content="RAJA MOBILES" />
-        <link rel="apple-touch-icon" href="/logo.png" />
+        <link rel="apple-touch-icon" href="/logo.svg" />
       </head>
       <body className="min-h-full flex flex-col">
         {children}

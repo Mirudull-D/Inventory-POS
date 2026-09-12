@@ -1,7 +1,7 @@
 "use server";
 
 import { dbStore } from "@/lib/dbStore";
-import { Product, ProductBatch, ProductWithBatches, OrderWithRelations, CartItem } from "@/lib/types";
+import { Product, ProductBatch, ProductWithBatches, OrderWithRelations, CartItem, Expense } from "@/lib/types";
 
 // Helper to serialize Date objects from Postgres to strings
 function serialize<T>(data: T): T {
@@ -93,4 +93,28 @@ export async function submitOrder(payload: {
 
 export async function removeOrder(id: string): Promise<void> {
   return await dbStore.deleteOrder(id);
+}
+
+// Expenses
+export async function fetchExpenses(): Promise<Expense[]> {
+  return serialize(await dbStore.listExpenses());
+}
+
+export async function createExpense(data: {
+  title: string;
+  category: string;
+  amount: number;
+  payment_mode: string;
+  notes: string | null;
+  expense_date: string;
+}): Promise<Expense> {
+  return serialize(await dbStore.addExpense(data));
+}
+
+export async function editExpense(id: string, data: Partial<Expense>): Promise<Expense | null> {
+  return serialize(await dbStore.updateExpense(id, data));
+}
+
+export async function removeExpense(id: string): Promise<void> {
+  return await dbStore.deleteExpense(id);
 }

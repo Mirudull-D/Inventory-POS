@@ -12,8 +12,8 @@ export default async function InvoicePage({ params }: { params: Promise<{ id: st
   if (!order) {
     return (
       <div className="min-h-screen bg-white flex flex-col items-center justify-center gap-4">
-        <p className="text-[#DC2626] font-bold text-xl">Invoice Not Found</p>
-        <Link href="/" className="px-6 py-2 bg-[#FAFAFA] border border-[#DC2626]/30 hover:bg-white rounded-lg text-[#000000] font-bold transition-colors">
+        <p className="text-[#3F3F46] font-bold text-xl">Invoice Not Found</p>
+        <Link href="/" className="px-6 py-2 bg-[#FAFAFA] border border-[#3F3F46]/30 hover:bg-white rounded-lg text-[#000000] font-bold transition-colors">
           Return to Dashboard
         </Link>
       </div>
@@ -43,29 +43,29 @@ export default async function InvoicePage({ params }: { params: Promise<{ id: st
 
       {/* The Invoice Document — full-height flex column so the footer is pinned
           to the bottom of the page instead of floating below the totals. */}
-      <div className="w-full max-w-3xl bg-white border border-[#DC2626]/30 rounded-2xl shadow-xl print:shadow-none print:border-none print:rounded-none overflow-hidden flex flex-col min-h-[calc(100vh-8rem)] print:min-h-[calc(100vh-20mm)]">
+      <div className="w-full max-w-3xl bg-white border border-[#3F3F46]/30 rounded-2xl shadow-xl print:shadow-none print:border-none print:rounded-none overflow-hidden flex flex-col min-h-[calc(100vh-8rem)] print:min-h-[calc(100vh-20mm)]">
         
         {/* Header Section */}
         <div className="bg-[#ffffff] border-b border-[#e5e5e5] p-8 sm:p-12 print:p-6 flex flex-col items-center text-center relative">
-          <div className="absolute top-0 left-0 right-0 h-1.5 bg-gradient-to-r from-[#DC2626] via-[#DC2626] to-[#DC2626]" />
+          <div className="absolute top-0 left-0 right-0 h-1.5 bg-gradient-to-r from-[#3F3F46] via-[#3F3F46] to-[#3F3F46]" />
           <div className="w-24 h-24 flex items-center justify-center mb-3">
-            <img src="/logo.png" alt="RAJA MOBILES Logo" className="max-w-full max-h-full object-contain" />
+            <img src="/logo.svg" alt="RAJA MOBILES Logo" className="max-w-full max-h-full object-contain" />
           </div>
-          <h1 className="text-3xl font-black text-[#DC2626] tracking-tight">RAJA MOBILES</h1>
-          <p className="text-xs text-[#DC2626] font-bold tracking-wider mt-1 mb-1">Mobiles • Accessories • Recharges</p>
-          <p className="text-xs text-[#DC2626] font-bold tracking-wider mb-4">
+          <h1 className="text-3xl font-black text-[#3F3F46] tracking-tight">RAJA MOBILES</h1>
+          <p className="text-xs text-[#3F3F46] font-bold tracking-wider mt-1 mb-1">Mobiles • Accessories • Recharges</p>
+          <p className="text-xs text-[#3F3F46] font-bold tracking-wider mb-4">
             {order.is_gst ? "TAX INVOICE" : "INVOICE"}: {order.id}
           </p>
 
           <div className="flex flex-col items-center gap-2 text-sm text-[#333333] font-semibold">
             <div className="text-center max-w-md leading-relaxed">
-              <span className="inline-block text-[#DC2626] mr-1.5 align-middle -mt-0.5">
+              <span className="inline-block text-[#3F3F46] mr-1.5 align-middle -mt-0.5">
                 <MapPin className="w-3.5 h-3.5" />
               </span>
               <span>No. 37/2, CC Road, Naidumangalam, Tiruvannamalai District - 606802</span>
             </div>
             <div className="flex items-center gap-1.5 justify-center">
-              <Phone className="w-3.5 h-3.5 text-[#DC2626] shrink-0" />
+              <Phone className="w-3.5 h-3.5 text-[#3F3F46] shrink-0" />
               <span>97870143403 / 7010141698</span>
             </div>
           </div>
@@ -75,7 +75,7 @@ export default async function InvoicePage({ params }: { params: Promise<{ id: st
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-8 p-8 sm:p-12 print:p-6 border-b border-[#e5e5e5]/50">
           <div>
             <h3 className="text-[10px] font-bold text-[#666666] uppercase tracking-[0.2em] mb-3">Billed To</h3>
-            <p className="text-base font-bold text-[#DC2626]">{order.customer_name || "Guest Customer"}</p>
+            <p className="text-base font-bold text-[#3F3F46]">{order.customer_name || "Guest Customer"}</p>
             {order.customer_phone && (
               <p className="text-sm text-[#555555] font-semibold mt-1">+91 {order.customer_phone}</p>
             )}
@@ -104,7 +104,7 @@ export default async function InvoicePage({ params }: { params: Promise<{ id: st
           <div className="w-full overflow-x-auto scrollbar-thin pb-2">
             <table className="w-full text-left border-collapse min-w-[400px]">
               <thead>
-                <tr className="border-b-2 border-[#DC2626]/30">
+                <tr className="border-b-2 border-[#3F3F46]/30">
                   <th className="py-4 text-[11px] font-bold text-[#666666] uppercase tracking-wider">Item Description</th>
                   <th className="py-4 text-[11px] font-bold text-[#666666] uppercase tracking-wider text-center">Qty</th>
                   <th className="py-4 text-[11px] font-bold text-[#666666] uppercase tracking-wider text-right">Price</th>
@@ -115,11 +115,11 @@ export default async function InvoicePage({ params }: { params: Promise<{ id: st
                 {order.items.map((item, index: number) => (
                   <tr key={index} className="group">
                     <td className="py-6 pr-4 print:py-3">
-                      <p className="text-sm font-bold text-[#DC2626]">{item.snapshot_name}</p>
+                      <p className="text-sm font-bold text-[#3F3F46]">{item.snapshot_name}</p>
                     </td>
                     <td className="py-6 px-4 print:py-3 text-center text-sm font-bold text-[#000000]">{item.quantity}</td>
                     <td className="py-6 pl-4 print:py-3 text-right text-sm font-bold text-[#000000]">₹{Number(item.snapshot_price).toLocaleString(undefined, {minimumFractionDigits: 2})}</td>
-                    <td className="py-6 pl-4 print:py-3 text-right text-sm font-black text-[#DC2626]">₹{(Number(item.snapshot_price) * item.quantity).toLocaleString(undefined, {minimumFractionDigits: 2})}</td>
+                    <td className="py-6 pl-4 print:py-3 text-right text-sm font-black text-[#3F3F46]">₹{(Number(item.snapshot_price) * item.quantity).toLocaleString(undefined, {minimumFractionDigits: 2})}</td>
                   </tr>
                 ))}
               </tbody>
@@ -144,7 +144,7 @@ export default async function InvoicePage({ params }: { params: Promise<{ id: st
                   <span className="text-[#666666] font-bold uppercase tracking-wider">
                     Discount {order.discount_type === 'PERCENT' ? `(${order.discount_value}%)` : ''}
                   </span>
-                  <span className="font-bold text-[#E11D48]">-₹{Number(order.discount_amount).toLocaleString(undefined, {minimumFractionDigits: 2})}</span>
+                  <span className="font-bold text-[#27272A]">-₹{Number(order.discount_amount).toLocaleString(undefined, {minimumFractionDigits: 2})}</span>
                 </div>
               )}
 
@@ -164,9 +164,9 @@ export default async function InvoicePage({ params }: { params: Promise<{ id: st
                 </div>
               )}
 
-              <div className="border-t border-[#DC2626]/30 pt-4 mt-2 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-1 sm:gap-2">
-                <span className="text-sm font-black text-[#DC2626] uppercase tracking-widest shrink-0">Total Amount</span>
-                <span className="text-3xl font-black text-[#DC2626] self-end sm:self-auto leading-none mt-1 sm:mt-0">
+              <div className="border-t border-[#3F3F46]/30 pt-4 mt-2 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-1 sm:gap-2">
+                <span className="text-sm font-black text-[#3F3F46] uppercase tracking-widest shrink-0">Total Amount</span>
+                <span className="text-3xl font-black text-[#3F3F46] self-end sm:self-auto leading-none mt-1 sm:mt-0">
                   ₹{Number(order.grand_total).toLocaleString(undefined, {minimumFractionDigits: 2})}
                 </span>
               </div>
@@ -174,7 +174,7 @@ export default async function InvoicePage({ params }: { params: Promise<{ id: st
         </div>
         {/* Footer — mt-auto keeps it anchored to the bottom of the page */}
         <div className="mt-auto border-t border-[#e5e5e5]/60 p-6 print:p-4 text-center bg-[#fafafa] flex flex-col items-center justify-center gap-1.5">
-          <p className="text-xs font-bold text-[#DC2626] tracking-wider uppercase">Thank you for shopping!</p>
+          <p className="text-xs font-bold text-[#3F3F46] tracking-wider uppercase">Thank you for shopping!</p>
           <p className="text-[9px] font-bold text-[#666666]/80 uppercase tracking-[0.15em]">Powered by Cenexa Systems @2026</p>
         </div>
 
