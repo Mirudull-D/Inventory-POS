@@ -1,7 +1,7 @@
 "use server";
 
 import { dbStore } from "@/lib/dbStore";
-import { Product, ProductBatch, ProductWithBatches, OrderWithRelations, CartItem, Expense } from "@/lib/types";
+import { Product, ProductBatch, ProductWithBatches, OrderWithRelations, CartItem, Expense, PaymentMode } from "@/lib/types";
 
 // Helper to serialize Date objects from Postgres to strings
 function serialize<T>(data: T): T {
@@ -87,6 +87,7 @@ export async function submitOrder(payload: {
   deliveryFee: number;
   grandTotal: number;
   cashReceived: number;
+  paymentMode: PaymentMode;
 }): Promise<{ orderId: string }> {
   return await dbStore.submitOrder(payload);
 }

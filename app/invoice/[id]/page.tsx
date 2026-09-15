@@ -217,7 +217,7 @@ export default async function InvoicePage({
                 <p>Email: rajamobilestvm@gmail.com</p>
                 {order.is_gst && (
                   <p className="text-zinc-800 font-medium pt-0.5">
-                    GSTIN: <span className="font-mono">33AALCR8921B1Z9</span> • State Code: 33
+                    GSTIN: <span className="font-mono">33AEEPI4975G1ZI</span> • State Code: 33
                   </p>
                 )}
               </div>
@@ -244,8 +244,12 @@ export default async function InvoicePage({
               <div>
                 <span className="text-zinc-400">Payment: </span>
                 <span className="text-zinc-800 font-medium uppercase">
-                  {order.source} • {order.status}
+                  {order.payment_mode} • {order.status}
                 </span>
+              </div>
+              <div>
+                <span className="text-zinc-400">Channel: </span>
+                <span className="text-zinc-700 uppercase">{order.source}</span>
               </div>
             </div>
           </div>
@@ -288,8 +292,12 @@ export default async function InvoicePage({
                 <th className="pb-3">Item Description</th>
                 {order.is_gst && <th className="pb-3 text-center w-16">HSN</th>}
                 <th className="pb-3 text-center w-12">Qty</th>
-                <th className="pb-3 text-right w-24">Rate (₹)</th>
-                <th className="pb-3 text-right w-28">Amount (₹)</th>
+                <th className="pb-3 text-right w-24">
+                  Rate (₹){order.is_gst && <span className="block text-[8px] font-normal normal-case tracking-normal text-zinc-400">incl. GST</span>}
+                </th>
+                <th className="pb-3 text-right w-28">
+                  Amount (₹){order.is_gst && <span className="block text-[8px] font-normal normal-case tracking-normal text-zinc-400">incl. GST</span>}
+                </th>
               </tr>
             </thead>
             <tbody className="divide-y divide-zinc-100">
@@ -346,14 +354,6 @@ export default async function InvoicePage({
               </div>
             </div>
 
-            {/* UPI info */}
-            <div className="text-xs text-zinc-600 space-y-0.5 pt-1">
-              <span className="text-[10px] font-semibold text-zinc-400 uppercase tracking-wider block">
-                Payment UPI
-              </span>
-              <span className="font-mono text-zinc-800">rajamobilestvm@upi</span>
-            </div>
-
             {/* Cash details if applicable */}
             {cashReceivedNum > 0 && (
               <div className="text-xs text-zinc-600 space-y-0.5 pt-1">
@@ -385,7 +385,14 @@ export default async function InvoicePage({
           {/* Right Side: Financial Breakdown */}
           <div className="w-full sm:w-64 space-y-2 text-xs">
             <div className="flex justify-between text-zinc-600">
-              <span>Subtotal</span>
+              <span>
+                Subtotal
+                {order.is_gst && (
+                  <span className="text-[9px] font-semibold text-zinc-400 uppercase ml-1">
+                    incl. GST
+                  </span>
+                )}
+              </span>
               <span className="font-mono text-zinc-900">
                 ₹{subtotalNum.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
               </span>
@@ -404,6 +411,9 @@ export default async function InvoicePage({
 
             {order.is_gst && gstAmountNum > 0 && (
               <>
+                <div className="pt-1 mt-1 border-t border-dashed border-zinc-200 text-[10px] font-semibold text-zinc-400 uppercase tracking-wider">
+                  GST (included above)
+                </div>
                 <div className="flex justify-between text-zinc-600">
                   <span>CGST ({halfGstRate.toFixed(1)}%)</span>
                   <span className="font-mono text-zinc-800">
@@ -420,7 +430,7 @@ export default async function InvoicePage({
             )}
 
             {deliveryFeeNum > 0 && (
-              <div className="flex justify-between text-zinc-600">
+              <div className="flex justify-between text-zinc-600 pt-1 border-t border-dashed border-zinc-200">
                 <span>Delivery Fee</span>
                 <span className="font-mono text-zinc-800">
                   ₹{deliveryFeeNum.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}

@@ -33,21 +33,24 @@ export type Customer = {
   created_at: string;
 };
 
+export type PaymentMode = 'CASH' | 'TVS' | 'BAJAJ' | 'HDFC' | 'DMI';
+
 export type OrderRow = {
   id: string;
   customer_id: string;
   source: 'ONLINE' | 'OFFLINE';
   status: 'COMPLETED' | 'PENDING';
   is_gst: boolean; // true = GST invoice, false = non-GST bill
-  subtotal: number;
+  subtotal: number; // GST-inclusive (line price × qty)
   discount_type: 'PERCENT' | 'FIXED';
   discount_value: number;
   discount_amount: number;
   gst_percentage: number;
-  gst_amount: number;
+  gst_amount: number; // GST inside subtotal-discount (derived)
   delivery_fee: number;
-  grand_total: number;
+  grand_total: number; // = subtotal - discount + delivery
   cash_received: number;
+  payment_mode: PaymentMode;
   bill_date: string;
   created_at: string;
 };

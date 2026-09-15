@@ -84,6 +84,11 @@ const EXPENSE_CATEGORIES = [
 
 const EXPENSE_PAYMENT_MODES = ["CASH", "UPI", "CARD", "BANK", "OTHER"] as const;
 
+// Payment / financing options available at the point of sale.
+// Kept in sync with the CHECK constraint on orders.payment_mode in schema.sql.
+const ORDER_PAYMENT_MODES = ["CASH", "TVS", "BAJAJ", "HDFC", "DMI"] as const;
+type OrderPaymentMode = (typeof ORDER_PAYMENT_MODES)[number];
+
 // Shared date-window test reused by the Expenses tab and the analytics dashboard.
 type PeriodKey = "all" | "today" | "week" | "month" | "year" | "custom";
 const isDateInPeriod = (
@@ -165,6 +170,7 @@ type CompletedOrder = {
   deliveryFee: number;
   grandTotal: number;
   cashReceived: number;
+  paymentMode: OrderPaymentMode;
   date: string;
   createdAt: string;
   status: "Completed" | "Pending";
@@ -438,6 +444,7 @@ export default function POSBilling() {
   );
   const [deliveryFee, setDeliveryFee] = useState<number>(0);
   const [cashReceived, setCashReceived] = useState<number>(0);
+  const [paymentMode, setPaymentMode] = useState<OrderPaymentMode>("CASH");
   const [applyGST, setApplyGST] = useState<boolean>(false);
   const [gstPercentage, setGstPercentage] = useState<number>(18);
   const [activeInvoiceId, setActiveInvoiceId] = useState<string | null>(null);
@@ -640,6 +647,11 @@ export default function POSBilling() {
             deliveryFee: Number(o.delivery_fee) || 0,
             grandTotal: Number(o.grand_total) || 0,
             cashReceived: Number(o.cash_received) || 0,
+            paymentMode: (ORDER_PAYMENT_MODES as readonly string[]).includes(
+              String(o.payment_mode),
+            )
+              ? (o.payment_mode as OrderPaymentMode)
+              : "CASH",
             date: o.bill_date,
             createdAt: o.created_at,
             status: o.status === "COMPLETED" ? "Completed" : "Pending",
@@ -1033,16 +1045,19 @@ export default function POSBilling() {
     setCatalog((prev) => prev.filter((c) => c.id !== id));
   };
 
+  // Product prices are GST-inclusive. Subtotal already contains GST; we back-derive
+  // the GST portion for display and never add it on top of the grand total.
   const subtotal = items.reduce((acc, item) => acc + item.price * item.qty, 0);
   const calculatedDiscount =
     discountType === "percent"
       ? subtotal * (discountValue / 100)
       : discountValue;
-  const gstAmount = applyGST
-    ? (subtotal - calculatedDiscount) * (gstPercentage / 100)
-    : 0;
-  const grandTotal =
-    Math.max(0, subtotal - calculatedDiscount) + deliveryFee + gstAmount;
+  const netInclusive = Math.max(0, subtotal - calculatedDiscount);
+  const gstAmount =
+    applyGST && gstPercentage > 0
+      ? netInclusive - netInclusive / (1 + gstPercentage / 100)
+      : 0;
+  const grandTotal = netInclusive + deliveryFee;
 
   // Suggest a GST % from the products currently in the cart (their per-product
   // default rate). Used to pre-fill the changeable GST field when a GST invoice
@@ -1111,13 +1126,13 @@ export default function POSBilling() {
       discountType === "percent"
         ? localSubtotal * (discountValue / 100)
         : discountValue;
-    const localGstAmount = applyGST
-      ? (localSubtotal - localCalculatedDiscount) * (gstPercentage / 100)
-      : 0;
-    const localGrandTotal =
-      Math.max(0, localSubtotal - localCalculatedDiscount) +
-      deliveryFee +
-      localGstAmount;
+    // Prices are GST-inclusive: derive GST from subtotal instead of adding on top.
+    const localNetInclusive = Math.max(0, localSubtotal - localCalculatedDiscount);
+    const localGstAmount =
+      applyGST && gstPercentage > 0
+        ? localNetInclusive - localNetInclusive / (1 + gstPercentage / 100)
+        : 0;
+    const localGrandTotal = localNetInclusive + deliveryFee;
 
     // Validate totals against PostgreSQL numeric(10,2) overflow limit (99,999,999.99)
     const MAX_LIMIT = 99999999.99;
@@ -1180,6 +1195,7 @@ export default function POSBilling() {
         deliveryFee: deliveryFee,
         grandTotal: localGrandTotal,
         cashReceived: cashReceived,
+        paymentMode: paymentMode,
       });
 
       // Construct mappedOrder directly in memory to respond with ZERO blocking delay
@@ -1205,6 +1221,7 @@ export default function POSBilling() {
         deliveryFee: Number(deliveryFee) || 0,
         grandTotal: Number(localGrandTotal) || 0,
         cashReceived: Number(cashReceived) || 0,
+        paymentMode: paymentMode,
         date: orderTimestamp,
         createdAt: new Date().toISOString(),
         status: "Completed",
@@ -1244,6 +1261,7 @@ export default function POSBilling() {
       setDiscountValue(0);
       setDeliveryFee(0);
       setCashReceived(0);
+      setPaymentMode("CASH");
       setApplyGST(false);
       setGstPercentage(18);
 
@@ -1304,27 +1322,26 @@ export default function POSBilling() {
     let message = `${shopEmoji} *RAJA MOBILES* ${shopEmoji}\n\n`;
     message += `${checkEmoji} Here are your ${order.isGst ? "GST invoice" : "bill"} details!\n\n`;
 
-    message += `Subtotal: ₹${order.subtotal.toLocaleString(undefined, { minimumFractionDigits: 2 })}\n`;
+    message += `Subtotal (incl. GST): ₹${order.subtotal.toLocaleString(undefined, { minimumFractionDigits: 2 })}\n`;
     if (order.discount > 0) {
       message += `Discount Applied: -₹${order.discount.toLocaleString(undefined, { minimumFractionDigits: 2 })}\n`;
     }
 
-    // GST calculation
-    const calculatedGst =
-      order.grandTotal - (order.subtotal - order.discount + order.deliveryFee);
-
-    if (calculatedGst > 0.1) {
+    // GST already sits inside the subtotal — surface it for the customer only.
+    const gstInsideBill = Number(order.gstAmount) || 0;
+    if (order.isGst && gstInsideBill > 0.1) {
       const gstLabel = order.gstPercentage
-        ? `GST (${order.gstPercentage}%)`
-        : "GST";
-      message += `${gstLabel}: ₹${calculatedGst.toLocaleString(undefined, { minimumFractionDigits: 2 })}\n`;
+        ? `GST (${order.gstPercentage}% incl.)`
+        : "GST (incl.)";
+      message += `${gstLabel}: ₹${gstInsideBill.toLocaleString(undefined, { minimumFractionDigits: 2 })}\n`;
     }
 
     if (order.deliveryFee > 0) {
       message += `Delivery Fee: ₹${order.deliveryFee.toLocaleString(undefined, { minimumFractionDigits: 2 })}\n`;
     }
 
-    message += `\n${moneyEmoji} *Total Amount: ₹${order.grandTotal.toLocaleString(undefined, { minimumFractionDigits: 2 })}*\n\n`;
+    message += `\n${moneyEmoji} *Total Amount: ₹${order.grandTotal.toLocaleString(undefined, { minimumFractionDigits: 2 })}*\n`;
+    message += `Payment: ${order.paymentMode}\n\n`;
     message += `${receiptEmoji} View and download your detailed digital receipt here:\n${invoiceUrl}`;
     const encodedMessage = encodeURIComponent(message);
     const cleanPhone = order.customerPhone.replace(/\D/g, "").slice(-10);
@@ -3002,8 +3019,11 @@ export default function POSBilling() {
 
               {/* Payment Receipt Card */}
               <div className="bg-white rounded-xl p-4 sm:p-5 border border-black/10 shadow-xs space-y-3">
-                <div className="text-[10px] font-extrabold text-gray-400 uppercase tracking-widest border-b border-gray-100 pb-2">
-                  Payment Receipt
+                <div className="text-[10px] font-extrabold text-gray-400 uppercase tracking-widest border-b border-gray-100 pb-2 flex justify-between items-center">
+                  <span>Payment Receipt</span>
+                  <span className="text-[9px] font-black text-[#3F3F46] bg-black/5 px-2 py-0.5 rounded">
+                    {completedBillData.paymentMode}
+                  </span>
                 </div>
 
                 <div className="flex justify-between items-center text-xs">
@@ -3621,7 +3641,7 @@ export default function POSBilling() {
                             {items
                               .filter((i) => i.name)
                               .reduce((sum, i) => sum + i.qty, 0)}{" "}
-                            items)
+                            items) <span className="text-[9px] font-bold text-[#52525B] uppercase">incl. GST</span>
                           </span>
                           <span className="font-bold text-[#000000]">
                             ₹
@@ -3666,7 +3686,7 @@ export default function POSBilling() {
                           {applyGST && (
                             <div className="flex justify-between items-center">
                               <span className="text-xs font-bold text-[#000000] uppercase tracking-wider">
-                                GST
+                                GST <span className="text-[9px] font-bold text-[#52525B]">(incl.)</span>
                               </span>
                               <div className="flex items-center gap-2">
                                 <div className="flex items-center gap-1">
@@ -3697,6 +3717,29 @@ export default function POSBilling() {
                         </div>
                       </div>
 
+                      {/* Financial Option — payment method / EMI provider */}
+                      <div className="pt-2 space-y-1.5">
+                        <span className="block text-[9px] font-bold text-[#000000] uppercase tracking-wider">
+                          Financial Option
+                        </span>
+                        <div className="grid grid-cols-5 gap-1.5">
+                          {ORDER_PAYMENT_MODES.map((mode) => (
+                            <button
+                              key={mode}
+                              type="button"
+                              onClick={() => setPaymentMode(mode)}
+                              className={`py-1.5 rounded-lg text-[10px] font-bold tracking-wider uppercase transition-all cursor-pointer border ${
+                                paymentMode === mode
+                                  ? "bg-[#3F3F46] text-white border-[#3F3F46] shadow-sm"
+                                  : "bg-white text-[#000000] border-black/10 hover:border-[#3F3F46]"
+                              }`}
+                            >
+                              {mode}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+
                       {/* Grand Total */}
                       <div className="flex justify-between items-center text-sm font-bold pt-4 border-t border-black/10">
                         <span className="text-[#000000] uppercase tracking-wider">
@@ -3710,10 +3753,10 @@ export default function POSBilling() {
                         </span>
                       </div>
 
-                      {/* Cash Payment */}
+                      {/* Cash / Finance Amount Received */}
                       <div className="bg-[#FFFFFF]/40 border border-black/10 rounded-xl p-4 mt-2">
                         <span className="block text-[9px] font-bold text-[#000000] uppercase tracking-wider mb-0.5">
-                          Cash Payment
+                          {paymentMode === "CASH" ? "Cash Payment" : `${paymentMode} Finance`}
                         </span>
                         <label className="block text-[10px] font-bold text-[#000000] mb-2.5">
                           Amount Received (₹)

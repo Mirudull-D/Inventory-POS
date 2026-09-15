@@ -9,6 +9,7 @@ import {
   OrderWithRelations,
   CartItem,
   Expense,
+  PaymentMode,
 } from './types';
 
 // Utility to generate a unique ID
@@ -283,6 +284,7 @@ export const dbStore = {
     deliveryFee: number;
     grandTotal: number;
     cashReceived: number;
+    paymentMode: PaymentMode;
   }): Promise<{ orderId: string }> {
     // Neon HTTP doesn't natively support full interactive transactions in the simple API,
     // but we can execute them sequentially or use multiple statements.
@@ -362,19 +364,24 @@ export const dbStore = {
       }
     }
 
+    // Subtotal is GST-inclusive (sum of line prices × qty).
+    // grand_total = subtotal - discount + delivery  (GST is embedded in subtotal).
+    const subtotalInclusive = payload.grandTotal + payload.discountAmount - payload.deliveryFee;
+
     // Insert order & execute all batch stock deductions concurrently
     await Promise.all([
       sql`
         INSERT INTO orders (
           id, customer_id, source, status, is_gst, subtotal, discount_type, discount_value,
           discount_amount, gst_percentage, gst_amount, delivery_fee, grand_total,
-          cash_received, bill_date, created_at
+          cash_received, payment_mode, bill_date, created_at
         ) VALUES (
           ${payload.orderId}, ${customer.id}, ${payload.source}, 'COMPLETED', ${payload.isGst},
-          ${payload.grandTotal + payload.discountAmount - payload.gstAmount - payload.deliveryFee},
+          ${subtotalInclusive},
           ${payload.discountType}, ${payload.discountValue}, ${payload.discountAmount},
           ${payload.gstPercentage}, ${payload.gstAmount}, ${payload.deliveryFee},
-          ${payload.grandTotal}, ${payload.cashReceived}, ${payload.billDate}, now()
+          ${payload.grandTotal}, ${payload.cashReceived}, ${payload.paymentMode},
+          ${payload.billDate}, now()
         )
       `,
       ...batchUpdates.map((u) =>
