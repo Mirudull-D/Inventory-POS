@@ -459,9 +459,6 @@ export default function POSBilling() {
   const [showLowStockAlertModal, setShowLowStockAlertModal] = useState<boolean>(false);
   const [lowStockAlertProducts, setLowStockAlertProducts] = useState<CatalogItem[]>([]);
 
-  const [showQuickAddStockModal, setShowQuickAddStockModal] = useState<boolean>(false);
-  const [quickAddStockProduct, setQuickAddStockProduct] = useState<CatalogItem | null>(null);
-  const [quickAddStockAmount, setQuickAddStockAmount] = useState<string>("");
 
   // Analytics filter/navigation states
   const [analyticsPeriod, setAnalyticsPeriod] = useState<
@@ -1005,40 +1002,6 @@ export default function POSBilling() {
     }
   };
 
-  const quickAddStock = (product: CatalogItem) => {
-    const activeBatch = product.batches?.find((b) => b.stock_quantity > 0) || (product.batches && product.batches.length > 0 ? product.batches[0] : null);
-    if (!activeBatch) {
-      alert("No batch exists for this product. Please click Edit to add a batch first.");
-      return;
-    }
-    setQuickAddStockProduct(product);
-    setQuickAddStockAmount("");
-    setShowQuickAddStockModal(true);
-  };
-
-  const handleQuickAddStockSubmit = async () => {
-    if (!quickAddStockProduct) return;
-    const addQty = parseInt(quickAddStockAmount);
-    if (isNaN(addQty) || addQty <= 0) {
-      alert("Please enter a valid positive number.");
-      return;
-    }
-    const activeBatch = quickAddStockProduct.batches?.find((b) => b.stock_quantity > 0) || (quickAddStockProduct.batches && quickAddStockProduct.batches.length > 0 ? quickAddStockProduct.batches[0] : null);
-    if (!activeBatch) return;
-
-    try {
-      await editBatch(activeBatch.id, {
-        stock_quantity: (activeBatch.stock_quantity || 0) + addQty,
-      });
-      const updatedProducts = await fetchProducts();
-      setCatalog(updatedProducts.map(productToCatalogItem));
-      setShowQuickAddStockModal(false);
-      setQuickAddStockProduct(null);
-      setQuickAddStockAmount("");
-    } catch (e) {
-      alert("Failed to update stock");
-    }
-  };
 
   const deleteFromCatalog = async (id: string) => {
     await removeProduct(id);
@@ -6631,12 +6594,6 @@ export default function POSBilling() {
                                     {isExpanded ? "Close" : "Details"}
                                   </button>
                                   <button
-                                    onClick={() => quickAddStock(p)}
-                                    className="text-[10px] font-bold text-[#10B981] hover:text-white hover:bg-[#10B981] border border-[#10B981]/30 px-2.5 py-1.5 rounded uppercase tracking-wider transition-colors cursor-pointer inline-flex items-center gap-1"
-                                  >
-                                    <Plus className="w-3 h-3" /> Stock
-                                  </button>
-                                  <button
                                     onClick={() => openEditCatalog(p)}
                                     className="text-[10px] font-bold text-[#3F3F46] hover:text-white hover:bg-[#3F3F46] border border-[#3F3F46]/30 px-2.5 py-1.5 rounded uppercase tracking-wider transition-colors cursor-pointer inline-flex items-center gap-1"
                                   >
@@ -7074,63 +7031,6 @@ export default function POSBilling() {
           </div>
         )}
 
-        {/* Quick Add Stock Modal */}
-        {showQuickAddStockModal && quickAddStockProduct && (
-          <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-[500] flex items-center justify-center p-4 animate-in fade-in duration-200">
-            <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm overflow-hidden transform scale-100 animate-in zoom-in-95 duration-200 border border-black/10">
-              <div className="p-6">
-                <div className="flex justify-between items-start mb-6">
-                  <div>
-                    <h3 className="font-black text-lg text-black tracking-tight mb-1">Add Stock</h3>
-                    <p className="text-xs font-bold text-black/60">{quickAddStockProduct.name}</p>
-                  </div>
-                  <button
-                    onClick={() => {
-                      setShowQuickAddStockModal(false);
-                      setQuickAddStockProduct(null);
-                    }}
-                    className="text-black/40 hover:text-black transition-colors"
-                  >
-                    <X className="w-5 h-5" />
-                  </button>
-                </div>
-
-                <div className="mb-6">
-                  <label className="block text-[10px] font-bold text-black uppercase tracking-wider mb-2">
-                    Quantity to Add
-                  </label>
-                  <input
-                    type="number"
-                    min="1"
-                    className="w-full bg-white border border-black/20 focus:border-[#10B981] rounded-xl px-4 py-3 text-sm font-black text-black placeholder:text-black/30 focus:outline-none transition-colors"
-                    placeholder="Enter amount..."
-                    value={quickAddStockAmount}
-                    onChange={(e) => setQuickAddStockAmount(e.target.value)}
-                    autoFocus
-                  />
-                </div>
-
-                <div className="flex gap-3">
-                  <button
-                    onClick={() => {
-                      setShowQuickAddStockModal(false);
-                      setQuickAddStockProduct(null);
-                    }}
-                    className="flex-1 py-3 bg-white border border-black/10 hover:bg-black/5 text-black rounded-xl font-bold text-xs uppercase tracking-wider transition-colors"
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    onClick={handleQuickAddStockSubmit}
-                    className="flex-1 py-3 bg-[#10B981] hover:bg-[#059669] text-white rounded-xl font-bold text-xs uppercase tracking-wider transition-colors shadow-[0_4px_14px_rgba(16,185,129,0.3)]"
-                  >
-                    Confirm
-                  </button>
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
 
         {/* Classy Footer */}
         <footer className="mt-auto pt-10 pb-2 border-t border-black/10 flex flex-col md:flex-row justify-between items-center text-[10px] text-[#000000] font-semibold uppercase tracking-wider gap-4">
