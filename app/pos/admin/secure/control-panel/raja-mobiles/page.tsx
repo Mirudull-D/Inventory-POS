@@ -70,7 +70,6 @@ import {
   fetchProductUnits,
   editUnitSerial,
   removeUnit,
-  addUnits,
 } from "@/app/pos/actions";
 import { ProductWithBatches, ProductBatch, ProductUnit, CartItem, Expense, Category } from "@/lib/types";
 
@@ -685,6 +684,7 @@ export default function POSBilling() {
   const [unitsTargetName, setUnitsTargetName] = useState<string>("");
   const [unitRows, setUnitRows] = useState<ProductUnit[]>([]);
   const [isLoadingUnits, setIsLoadingUnits] = useState<boolean>(false);
+  const [isSavingCatalog, setIsSavingCatalog] = useState<boolean>(false); // guards Save Product / Save Batch against double-clicks
   const [inventorySearch, setInventorySearch] = useState<string>("");
   const [alertedIds, setAlertedIds] = useState<Set<string>>(new Set());
   const [expandedProductId, setExpandedProductId] = useState<string | null>(
@@ -997,6 +997,9 @@ export default function POSBilling() {
       }
     }
 
+    if (isSavingCatalog) return; // ignore double-clicks
+    setIsSavingCatalog(true);
+    try {
     if (editingCatalogId) {
       const data = await editProduct(editingCatalogId, productPayload);
       if (!data) {
@@ -1088,6 +1091,9 @@ export default function POSBilling() {
       resetCatalogForm();
       setShowCatalogModal(false);
     }
+    } finally {
+      setIsSavingCatalog(false);
+    }
   };
 
   const handleAddBatchSubmit = async () => {
@@ -1105,6 +1111,8 @@ export default function POSBilling() {
         return;
       }
     }
+    if (isSavingCatalog) return; // ignore double-clicks
+    setIsSavingCatalog(true);
     try {
       const batchPayload = {
         batch_no: newCatBatch || null,
@@ -1128,6 +1136,8 @@ export default function POSBilling() {
     } catch (err) {
       console.error(err);
       alert("Failed to add batch.");
+    } finally {
+      setIsSavingCatalog(false);
     }
   };
 
@@ -1189,34 +1199,6 @@ export default function POSBilling() {
       return;
     }
     setUnitRows((prev) => prev.filter((x) => x.id !== u.id));
-    await refreshCatalog();
-  };
-
-  // Append more serials to the product's most recent batch (top-up from the modal).
-  const addUnitsToProduct = async () => {
-    if (!unitsTargetProductId) return;
-    const serials = cleanSerials(serialInputs);
-    if (serials.length === 0) {
-      alert("Set the number of units to add, then fill in each IMEI/serial.");
-      return;
-    }
-    if (serials.length !== serialInputs.length) {
-      alert("Please fill in every IMEI/serial row (no blanks or duplicates).");
-      return;
-    }
-    const product = catalog.find((c) => c.id === unitsTargetProductId);
-    const batchId =
-      product?.batches?.slice().reverse()[0]?.id || product?.batches?.[0]?.id;
-    if (!batchId) {
-      alert("No batch exists yet. Use “+ Add Batch” to create one first.");
-      return;
-    }
-    const added = await addUnits(batchId, unitsTargetProductId, serials);
-    if (added === 0) {
-      alert("Those serials already exist for this product — nothing added.");
-    }
-    setSerialInputs([]);
-    setUnitRows(await fetchProductUnits(unitsTargetProductId));
     await refreshCatalog();
   };
 
@@ -2873,9 +2855,14 @@ export default function POSBilling() {
 
               <button
                 onClick={addToCatalog}
-                className="w-full py-3.5 mt-2 bg-[#3F3F46] hover:bg-[#27272A] text-white rounded-xl font-bold text-xs uppercase tracking-widest transition-colors shadow-sm cursor-pointer flex items-center justify-center gap-2"
+                disabled={isSavingCatalog}
+                className="w-full py-3.5 mt-2 bg-[#3F3F46] hover:bg-[#27272A] text-white rounded-xl font-bold text-xs uppercase tracking-widest transition-colors shadow-sm cursor-pointer flex items-center justify-center gap-2 disabled:opacity-60 disabled:cursor-not-allowed"
               >
-                <PackagePlus className="w-4 h-4" />
+                {isSavingCatalog ? (
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                ) : (
+                  <PackagePlus className="w-4 h-4" />
+                )}
                 {editingCatalogId ? "Save Changes" : "Save Product to Catalog"}
               </button>
             </div>
@@ -3003,9 +2990,14 @@ export default function POSBilling() {
               {/* Submit Button */}
               <button
                 onClick={handleAddBatchSubmit}
-                className="w-full py-3.5 mt-2 bg-[#3F3F46] hover:bg-[#27272A] text-white rounded-xl font-bold text-xs uppercase tracking-widest transition-colors shadow-sm cursor-pointer flex items-center justify-center gap-2"
+                disabled={isSavingCatalog}
+                className="w-full py-3.5 mt-2 bg-[#3F3F46] hover:bg-[#27272A] text-white rounded-xl font-bold text-xs uppercase tracking-widest transition-colors shadow-sm cursor-pointer flex items-center justify-center gap-2 disabled:opacity-60 disabled:cursor-not-allowed"
               >
-                <PackagePlus className="w-4 h-4" />
+                {isSavingCatalog ? (
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                ) : (
+                  <PackagePlus className="w-4 h-4" />
+                )}
                 Save New Batch
               </button>
             </div>
@@ -3104,22 +3096,8 @@ export default function POSBilling() {
                       </div>
                     )}
                     <p className="text-[9px] text-gray-500 font-semibold mt-1">
-                      Edit a serial and click away to save. Sold units are locked.
+                      Edit a serial and click away to save. Sold units are locked. To add more units, use “+ Add Batch”.
                     </p>
-                  </div>
-
-                  <div className="border-t border-black/10 pt-4">
-                    <label className="block text-[10px] font-bold text-gray-600 uppercase tracking-widest mb-2">
-                      Add more units
-                    </label>
-                    {renderSerialEntry()}
-                    <button
-                      onClick={addUnitsToProduct}
-                      className="w-full py-3 mt-3 bg-[#3F3F46] hover:bg-[#27272A] text-white rounded-xl font-bold text-xs uppercase tracking-widest transition-colors shadow-sm cursor-pointer flex items-center justify-center gap-2"
-                    >
-                      <Plus className="w-4 h-4" />
-                      Add units
-                    </button>
                   </div>
                 </>
               )}
