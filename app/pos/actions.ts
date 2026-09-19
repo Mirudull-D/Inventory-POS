@@ -1,7 +1,7 @@
 "use server";
 
 import { dbStore } from "@/lib/dbStore";
-import { Product, ProductBatch, ProductWithBatches, OrderWithRelations, CartItem, Expense, PaymentMode } from "@/lib/types";
+import { Product, ProductBatch, ProductWithBatches, ProductUnit, OrderWithRelations, CartItem, Expense, PaymentMode, Category } from "@/lib/types";
 
 // Helper to serialize Date objects from Postgres to strings
 function serialize<T>(data: T): T {
@@ -25,12 +25,25 @@ export async function verifyPasscode(enteredPasscode: string): Promise<{ success
   return { success: false };
 }
 
+// Categories
+export async function fetchCategories(): Promise<Category[]> {
+  return serialize(await dbStore.listCategories());
+}
+
+export async function createCategory(name: string): Promise<Category> {
+  return serialize(await dbStore.addCategory(name.trim()));
+}
+
+export async function removeCategory(id: string): Promise<void> {
+  return await dbStore.deleteCategory(id);
+}
+
 // Products
 export async function fetchProducts(): Promise<ProductWithBatches[]> {
   return serialize(await dbStore.listProductsWithBatches());
 }
 
-export async function createProduct(data: { name: string; description: string | null; category: string; gst_rate: number; low_stock_threshold: number }): Promise<Product> {
+export async function createProduct(data: { name: string; description: string | null; category: string; gst_rate: number; low_stock_threshold: number; tracks_serial?: boolean }): Promise<Product> {
   return serialize(await dbStore.addProduct(data));
 }
 
@@ -43,7 +56,10 @@ export async function removeProduct(id: string): Promise<void> {
 }
 
 // Batches
-export async function createBatch(productId: string, data: Omit<ProductBatch, 'id' | 'product_id' | 'arrived_at'>): Promise<ProductBatch> {
+export async function createBatch(
+  productId: string,
+  data: Omit<ProductBatch, 'id' | 'product_id' | 'arrived_at'> & { serials?: string[] },
+): Promise<ProductBatch> {
   return serialize(await dbStore.addBatch({
     product_id: productId,
     ...data,
@@ -56,6 +72,23 @@ export async function editBatch(id: string, data: Partial<ProductBatch>): Promis
 
 export async function removeBatch(id: string): Promise<void> {
   return await dbStore.deleteBatch(id);
+}
+
+// Product units (individual IMEI / serial rows)
+export async function fetchProductUnits(productId: string): Promise<ProductUnit[]> {
+  return serialize(await dbStore.listUnits(productId));
+}
+
+export async function editUnitSerial(id: string, serial: string): Promise<ProductUnit | null> {
+  return serialize(await dbStore.updateUnitSerial(id, serial.trim()));
+}
+
+export async function removeUnit(id: string): Promise<{ deleted: boolean; reason?: string }> {
+  return await dbStore.deleteUnit(id);
+}
+
+export async function addUnits(batchId: string, productId: string, serials: string[]): Promise<number> {
+  return await dbStore.addUnitsToBatch(batchId, productId, serials);
 }
 
 // Orders

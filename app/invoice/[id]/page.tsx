@@ -313,6 +313,11 @@ export default async function InvoicePage({
                       <div className="font-medium text-zinc-900">
                         {item.snapshot_name}
                       </div>
+                      {item.snapshot_serial && (
+                        <div className="text-[11px] font-mono text-zinc-500 mt-0.5">
+                          IMEI/SN: {item.snapshot_serial}
+                        </div>
+                      )}
                     </td>
                     {order.is_gst && (
                       <td className="py-3 text-center font-mono text-zinc-500">

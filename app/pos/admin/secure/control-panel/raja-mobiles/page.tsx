@@ -65,8 +65,14 @@ import {
   fetchExpenses,
   createExpense,
   removeExpense,
+  fetchCategories,
+  createCategory,
+  fetchProductUnits,
+  editUnitSerial,
+  removeUnit,
+  addUnits,
 } from "@/app/pos/actions";
-import { ProductWithBatches, ProductBatch, CartItem, Expense } from "@/lib/types";
+import { ProductWithBatches, ProductBatch, ProductUnit, CartItem, Expense, Category } from "@/lib/types";
 
 // Preset expense categories (users can also type a custom one)
 const EXPENSE_CATEGORIES = [
@@ -133,6 +139,7 @@ type CatalogItem = {
   id: string;
   name: string;
   desc?: string;
+  category?: string;
   price?: number;
   gstRate?: number;
   stockQuantity?: number;
@@ -142,6 +149,8 @@ type CatalogItem = {
   hsnCode?: string;
   batches?: ProductBatch[];
   productId?: string;
+  tracksSerial?: boolean;
+  availableUnits?: ProductUnit[];
 };
 
 type OrderItem = {
@@ -152,6 +161,8 @@ type OrderItem = {
   qty: number;
   product_id?: string | null;
   batch_id?: string | null;
+  unit_id?: string | null;
+  serial?: string | null;
 };
 
 type CompletedOrder = {
@@ -180,10 +191,12 @@ const SearchableItemInput = ({
   item,
   catalog,
   updateItem,
+  activeCategory = "ALL",
 }: {
   item: OrderItem;
   catalog: CatalogItem[];
   updateItem: (id: string, field: keyof OrderItem, value: any) => void;
+  activeCategory?: string;
 }) => {
   const [isOpen, setIsOpen] = useState(false);
   const [internalSearch, setInternalSearch] = useState("");
@@ -206,9 +219,35 @@ const SearchableItemInput = ({
 
   const filteredCatalog = catalog.filter(
     (c) =>
-      c.name.toLowerCase().includes(internalSearch.toLowerCase()) ||
-      (c.desc && c.desc.toLowerCase().includes(internalSearch.toLowerCase())),
+      (activeCategory === "ALL" || (c.category || "General") === activeCategory) &&
+      (c.name.toLowerCase().includes(internalSearch.toLowerCase()) ||
+        (c.desc && c.desc.toLowerCase().includes(internalSearch.toLowerCase()))),
   );
+
+  // Apply a catalog pick to this cart row. For serialized products, leave the
+  // unit unset so the row can prompt for a specific IMEI/serial next.
+  const selectItem = (catItem: CatalogItem) => {
+    updateItem(item.id, "name", catItem.name);
+    updateItem(item.id, "desc", catItem.desc || "");
+    updateItem(item.id, "product_id", catItem.productId || null);
+    updateItem(item.id, "unit_id", null);
+    updateItem(item.id, "serial", null);
+    updateItem(item.id, "batch_id", null);
+    if (catItem.price !== undefined) {
+      updateItem(item.id, "price", catItem.price);
+    }
+    if (catItem.tracksSerial) {
+      updateItem(item.id, "qty", 1);
+    }
+    setIsOpen(false);
+    // Serialized products need an IMEI chosen next, so don't jump to price.
+    if (!catItem.tracksSerial) {
+      setTimeout(() => {
+        const priceInput = document.getElementById(`price-${item.id}`);
+        if (priceInput) priceInput.focus();
+      }, 50);
+    }
+  };
 
   useEffect(() => {
     setSelectedIndex(0);
@@ -236,18 +275,7 @@ const SearchableItemInput = ({
     } else if (e.key === "Enter") {
       e.preventDefault();
       if (filteredCatalog[selectedIndex]) {
-        const catItem = filteredCatalog[selectedIndex];
-        updateItem(item.id, "name", catItem.name);
-        updateItem(item.id, "desc", catItem.desc || "");
-        updateItem(item.id, "product_id", catItem.productId || null);
-        if (catItem.price !== undefined) {
-          updateItem(item.id, "price", catItem.price);
-        }
-        setIsOpen(false);
-        setTimeout(() => {
-          const priceInput = document.getElementById(`price-${item.id}`);
-          if (priceInput) priceInput.focus();
-        }, 50);
+        selectItem(filteredCatalog[selectedIndex]);
       } else if (internalSearch.trim()) {
         updateItem(item.id, "name", internalSearch.trim());
         updateItem(item.id, "desc", "");
@@ -320,64 +348,16 @@ const SearchableItemInput = ({
                       onMouseDown={(e) => {
                         e.preventDefault();
                         if (isOutOfStock) return;
-                        updateItem(item.id, "name", catItem.name);
-                        updateItem(item.id, "desc", catItem.desc || "");
-                        updateItem(
-                          item.id,
-                          "product_id",
-                          catItem.productId || null,
-                        );
-                        if (catItem.price !== undefined) {
-                          updateItem(item.id, "price", catItem.price);
-                        }
-                        setIsOpen(false);
-                        setTimeout(() => {
-                          const priceInput = document.getElementById(
-                            `price-${item.id}`,
-                          );
-                          if (priceInput) priceInput.focus();
-                        }, 50);
+                        selectItem(catItem);
                       }}
                       onTouchStart={(e) => {
                         e.preventDefault();
                         if (isOutOfStock) return;
-                        updateItem(item.id, "name", catItem.name);
-                        updateItem(item.id, "desc", catItem.desc || "");
-                        updateItem(
-                          item.id,
-                          "product_id",
-                          catItem.productId || null,
-                        );
-                        if (catItem.price !== undefined) {
-                          updateItem(item.id, "price", catItem.price);
-                        }
-                        setIsOpen(false);
-                        setTimeout(() => {
-                          const priceInput = document.getElementById(
-                            `price-${item.id}`,
-                          );
-                          if (priceInput) priceInput.focus();
-                        }, 50);
+                        selectItem(catItem);
                       }}
                       onClick={() => {
                         if (isOutOfStock) return;
-                        updateItem(item.id, "name", catItem.name);
-                        updateItem(item.id, "desc", catItem.desc || "");
-                        updateItem(
-                          item.id,
-                          "product_id",
-                          catItem.productId || null,
-                        );
-                        if (catItem.price !== undefined) {
-                          updateItem(item.id, "price", catItem.price);
-                        }
-                        setIsOpen(false);
-                        setTimeout(() => {
-                          const priceInput = document.getElementById(
-                            `price-${item.id}`,
-                          );
-                          if (priceInput) priceInput.focus();
-                        }, 50);
+                        selectItem(catItem);
                       }}
                       onMouseEnter={() =>
                         !isOutOfStock && setSelectedIndex(idx)
@@ -453,6 +433,7 @@ export default function POSBilling() {
   const [isSubmittingOrder, setIsSubmittingOrder] = useState<boolean>(false);
 
   const [catalog, setCatalog] = useState<CatalogItem[]>([]);
+  const [categories, setCategories] = useState<Category[]>([]);
   const [isRefreshing, setIsRefreshing] = useState(false);
 
   // Modal States
@@ -594,6 +575,7 @@ export default function POSBilling() {
       productId: p.id,
       name: p.name,
       desc: p.description || undefined,
+      category: p.category || undefined,
       price: Number(p.active_selling_price) || 0,
       gstRate: Number(p.gst_rate) || 0,
       stockQuantity: Number(p.total_stock) || 0,
@@ -602,18 +584,22 @@ export default function POSBilling() {
       batchNo: activeBatch?.batch_no || undefined,
       manufacturer: activeBatch?.manufacturer || undefined,
       hsnCode: activeBatch?.hsn_code || undefined,
+      tracksSerial: Boolean(p.tracks_serial),
+      availableUnits: p.available_units || [],
     };
   };
 
   const fetchData = async () => {
     setIsRefreshing(true);
     try {
-      const [productsData, ordersData, expensesData] = await Promise.all([
+      const [productsData, ordersData, expensesData, categoriesData] = await Promise.all([
         fetchProducts(),
         fetchOrders(),
         fetchExpenses(),
+        fetchCategories(),
       ]);
       setCatalog(productsData.map(productToCatalogItem));
+      setCategories(categoriesData);
       setExpenses(
         expensesData.map((e) => ({ ...e, amount: Number(e.amount) || 0 })),
       );
@@ -632,6 +618,7 @@ export default function POSBilling() {
               desc: i.snapshot_name === "Custom Item" ? "Custom" : "",
               price: Number(i.snapshot_price) || 0,
               qty: Number(i.quantity) || 0,
+              serial: i.snapshot_serial || null,
             })),
             subtotal: Number(o.subtotal) || 0,
             discount: Number(o.discount_amount) || 0,
@@ -687,6 +674,17 @@ export default function POSBilling() {
   const [newCatBatch, setNewCatBatch] = useState<string>("");
   const [newCatManufacturer, setNewCatManufacturer] = useState<string>("");
   const [newCatHsn, setNewCatHsn] = useState<string>("");
+  const [newCatCategory, setNewCatCategory] = useState<string>("");
+  const [newCatTracksSerial, setNewCatTracksSerial] = useState<boolean>(false);
+  // One editable row per unit: serialInputs.length is the unit count.
+  const [serialInputs, setSerialInputs] = useState<string[]>([]);
+
+  // Manage-IMEIs modal state
+  const [showUnitsModal, setShowUnitsModal] = useState<boolean>(false);
+  const [unitsTargetProductId, setUnitsTargetProductId] = useState<string | null>(null);
+  const [unitsTargetName, setUnitsTargetName] = useState<string>("");
+  const [unitRows, setUnitRows] = useState<ProductUnit[]>([]);
+  const [isLoadingUnits, setIsLoadingUnits] = useState<boolean>(false);
   const [inventorySearch, setInventorySearch] = useState<string>("");
   const [alertedIds, setAlertedIds] = useState<Set<string>>(new Set());
   const [expandedProductId, setExpandedProductId] = useState<string | null>(
@@ -836,7 +834,83 @@ export default function POSBilling() {
     setNewCatBatch("");
     setNewCatManufacturer("");
     setNewCatHsn("");
+    setNewCatCategory("");
+    setNewCatTracksSerial(false);
+    setSerialInputs([]);
   };
+
+  // Grow/shrink the per-unit serial rows to `n`, preserving already-typed values.
+  const setSerialCount = (n: number) => {
+    const count = Math.max(0, Math.min(1000, Number.isFinite(n) ? n : 0));
+    setSerialInputs((prev) => {
+      const next = prev.slice(0, count);
+      while (next.length < count) next.push("");
+      return next;
+    });
+  };
+
+  const updateSerialAt = (idx: number, value: string) => {
+    setSerialInputs((prev) => prev.map((s, i) => (i === idx ? value : s)));
+  };
+
+  // Clean + de-duplicate the typed serial rows into a final list.
+  const cleanSerials = (rows: string[]): string[] => {
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const r of rows) {
+      const s = r.trim();
+      if (s && !seen.has(s)) {
+        seen.add(s);
+        out.push(s);
+      }
+    }
+    return out;
+  };
+
+  // Shared UI: a "number of units" box that generates one IMEI/serial input per unit.
+  const renderSerialEntry = () => (
+    <div className="space-y-2">
+      <div>
+        <label className="block text-[10px] font-bold text-gray-600 uppercase tracking-widest mb-1.5">
+          Number of Units <span className="text-[#3F3F46]">*</span>
+        </label>
+        <input
+          type="number"
+          min={0}
+          placeholder="e.g., 5"
+          className="w-full bg-white border border-gray-200 hover:border-gray-300 focus:border-[#3F3F46] rounded-lg px-3.5 py-2.5 text-sm font-bold text-black focus:outline-none transition-colors shadow-xs"
+          value={serialInputs.length || ""}
+          onWheel={(e) => e.currentTarget.blur()}
+          onChange={(e) =>
+            setSerialCount(e.target.value === "" ? 0 : parseInt(e.target.value, 10))
+          }
+        />
+      </div>
+      {serialInputs.length > 0 && (
+        <>
+          <div className="space-y-1.5 max-h-52 overflow-y-auto pr-1">
+            {serialInputs.map((s, idx) => (
+              <div key={idx} className="flex items-center gap-2">
+                <span className="w-5 text-[10px] font-bold text-gray-400 text-right shrink-0">
+                  {idx + 1}
+                </span>
+                <input
+                  type="text"
+                  placeholder={`IMEI / Serial #${idx + 1}`}
+                  className="w-full bg-white border border-gray-200 hover:border-gray-300 focus:border-[#3F3F46] rounded-lg px-3 py-2 text-sm font-mono text-black focus:outline-none transition-colors shadow-xs"
+                  value={s}
+                  onChange={(e) => updateSerialAt(idx, e.target.value)}
+                />
+              </div>
+            ))}
+          </div>
+          <p className="text-[9px] text-gray-500 font-semibold">
+            {cleanSerials(serialInputs).length} of {serialInputs.length} filled — stock is set by the number of units.
+          </p>
+        </>
+      )}
+    </div>
+  );
 
   const openEditCatalog = (catItem: CatalogItem, targetRowId?: string) => {
     setEditingCatalogId(catItem.id);
@@ -855,6 +929,9 @@ export default function POSBilling() {
     setNewCatBatch(catItem.batchNo || "");
     setNewCatManufacturer(catItem.manufacturer || "");
     setNewCatHsn(catItem.hsnCode || "");
+    setNewCatCategory(catItem.category || "");
+    setNewCatTracksSerial(Boolean(catItem.tracksSerial));
+    setSerialInputs([]);
 
     // Set active batch details
     const activeBatch =
@@ -886,10 +963,39 @@ export default function POSBilling() {
     const productPayload = {
       name: newCatName.trim(),
       description: newCatDesc || null,
-      category: "General",
+      category: newCatCategory.trim() || "General",
       gst_rate: newCatGst === "" ? 0 : Number(newCatGst),
       low_stock_threshold: newCatThreshold === "" ? 5 : Number(newCatThreshold),
+      tracks_serial: newCatTracksSerial,
     };
+
+    const serials = cleanSerials(serialInputs);
+    if (newCatTracksSerial && !editingCatalogId) {
+      if (serialInputs.length === 0) {
+        alert("Set the number of units, then fill in each IMEI/serial.");
+        return;
+      }
+      if (serials.length !== serialInputs.length) {
+        alert("Please fill in every IMEI/serial row (no blanks or duplicates).");
+        return;
+      }
+    }
+
+    // Persist a newly-typed category so it appears in the managed list next time.
+    const catName = newCatCategory.trim();
+    if (
+      catName &&
+      !categories.some((c) => c.name.toLowerCase() === catName.toLowerCase())
+    ) {
+      try {
+        const created = await createCategory(catName);
+        setCategories((prev) =>
+          prev.some((c) => c.id === created.id) ? prev : [...prev, created],
+        );
+      } catch {
+        /* non-fatal: product still saves with the category text */
+      }
+    }
 
     if (editingCatalogId) {
       const data = await editProduct(editingCatalogId, productPayload);
@@ -907,7 +1013,10 @@ export default function POSBilling() {
           hsn_code: newCatHsn || null,
           cost_price: newCatCostPrice === "" ? 0 : Number(newCatCostPrice),
           selling_price: newCatPrice === "" ? 0 : Number(newCatPrice),
-          stock_quantity: newCatStock === "" ? 0 : Number(newCatStock),
+          // For serialized products the stock is derived from unit rows — don't overwrite it here.
+          ...(newCatTracksSerial
+            ? {}
+            : { stock_quantity: newCatStock === "" ? 0 : Number(newCatStock) }),
         });
 
         // Refresh catalog to reflect batch changes
@@ -946,7 +1055,11 @@ export default function POSBilling() {
         hsn_code: newCatHsn || null,
         cost_price: newCatCostPrice === "" ? 0 : Number(newCatCostPrice),
         selling_price: newCatPrice === "" ? 0 : Number(newCatPrice),
-        stock_quantity: newCatStock === "" ? 0 : Number(newCatStock),
+        // Serialized: stock is set from the serial count on the server.
+        stock_quantity: newCatTracksSerial
+          ? serials.length
+          : newCatStock === "" ? 0 : Number(newCatStock),
+        ...(newCatTracksSerial ? { serials } : {}),
       };
 
       await createBatch(product.id, batchPayload);
@@ -979,6 +1092,19 @@ export default function POSBilling() {
 
   const handleAddBatchSubmit = async () => {
     if (!batchTargetProductId) return;
+    const targetProduct = catalog.find((c) => c.id === batchTargetProductId);
+    const tracksSerial = Boolean(targetProduct?.tracksSerial);
+    const serials = cleanSerials(serialInputs);
+    if (tracksSerial) {
+      if (serialInputs.length === 0) {
+        alert("Set the number of units, then fill in each IMEI/serial.");
+        return;
+      }
+      if (serials.length !== serialInputs.length) {
+        alert("Please fill in every IMEI/serial row (no blanks or duplicates).");
+        return;
+      }
+    }
     try {
       const batchPayload = {
         batch_no: newCatBatch || null,
@@ -986,7 +1112,10 @@ export default function POSBilling() {
         hsn_code: newCatHsn || null,
         cost_price: newCatCostPrice === "" ? 0 : Number(newCatCostPrice),
         selling_price: newCatPrice === "" ? 0 : Number(newCatPrice),
-        stock_quantity: newCatStock === "" ? 0 : Number(newCatStock),
+        stock_quantity: tracksSerial
+          ? serials.length
+          : newCatStock === "" ? 0 : Number(newCatStock),
+        ...(tracksSerial ? { serials } : {}),
       };
       await createBatch(batchTargetProductId, batchPayload);
 
@@ -1002,6 +1131,94 @@ export default function POSBilling() {
     }
   };
 
+
+  // Open the "Manage IMEIs" modal for a serialized product and load its units.
+  const openUnitsModal = async (productId: string, name: string) => {
+    setUnitsTargetProductId(productId);
+    setUnitsTargetName(name);
+    setUnitRows([]);
+    setShowUnitsModal(true);
+    setIsLoadingUnits(true);
+    try {
+      setUnitRows(await fetchProductUnits(productId));
+    } catch (err) {
+      console.error(err);
+      alert("Failed to load units.");
+    } finally {
+      setIsLoadingUnits(false);
+    }
+  };
+
+  const refreshCatalog = async () => {
+    const data = await fetchProducts();
+    setCatalog(data.map(productToCatalogItem));
+  };
+
+  const updateUnitRow = (id: string, serial: string) => {
+    setUnitRows((prev) =>
+      prev.map((u) => (u.id === id ? { ...u, serial } : u)),
+    );
+  };
+
+  // Persist a corrected serial (available units only) — called on blur.
+  const saveUnitSerial = async (u: ProductUnit) => {
+    const serial = u.serial.trim();
+    if (!serial) return;
+    const res = await editUnitSerial(u.id, serial);
+    if (!res) {
+      alert("Couldn't update this serial (the unit may already be sold).");
+      return;
+    }
+    await refreshCatalog();
+  };
+
+  const deleteUnitRow = async (u: ProductUnit) => {
+    if (
+      !window.confirm(
+        `Remove unit "${u.serial}"? This permanently deletes it and lowers stock by 1.`,
+      )
+    )
+      return;
+    const res = await removeUnit(u.id);
+    if (!res.deleted) {
+      alert(
+        res.reason === "sold"
+          ? "This unit was already sold on an invoice and can't be removed."
+          : "Couldn't remove this unit.",
+      );
+      return;
+    }
+    setUnitRows((prev) => prev.filter((x) => x.id !== u.id));
+    await refreshCatalog();
+  };
+
+  // Append more serials to the product's most recent batch (top-up from the modal).
+  const addUnitsToProduct = async () => {
+    if (!unitsTargetProductId) return;
+    const serials = cleanSerials(serialInputs);
+    if (serials.length === 0) {
+      alert("Set the number of units to add, then fill in each IMEI/serial.");
+      return;
+    }
+    if (serials.length !== serialInputs.length) {
+      alert("Please fill in every IMEI/serial row (no blanks or duplicates).");
+      return;
+    }
+    const product = catalog.find((c) => c.id === unitsTargetProductId);
+    const batchId =
+      product?.batches?.slice().reverse()[0]?.id || product?.batches?.[0]?.id;
+    if (!batchId) {
+      alert("No batch exists yet. Use “+ Add Batch” to create one first.");
+      return;
+    }
+    const added = await addUnits(batchId, unitsTargetProductId, serials);
+    if (added === 0) {
+      alert("Those serials already exist for this product — nothing added.");
+    }
+    setSerialInputs([]);
+    setUnitRows(await fetchProductUnits(unitsTargetProductId));
+    await refreshCatalog();
+  };
 
   const deleteFromCatalog = async (id: string) => {
     await removeProduct(id);
@@ -1080,6 +1297,20 @@ export default function POSBilling() {
     }
     const itemsToSave = items;
 
+    // Serialized products must have a specific IMEI/serial unit chosen.
+    const missingUnit = itemsToSave.find((i) => {
+      const cat = catalog.find(
+        (c) => c.productId === i.product_id || c.id === i.product_id,
+      );
+      return cat?.tracksSerial && !i.unit_id;
+    });
+    if (missingUnit) {
+      alert(
+        `Please select an IMEI/serial for "${missingUnit.name}" before completing the sale.`,
+      );
+      return null;
+    }
+
     // Recalculate values locally to avoid React state lag issues
     const localSubtotal = itemsToSave.reduce(
       (acc, item) => acc + item.price * item.qty,
@@ -1145,6 +1376,8 @@ export default function POSBilling() {
           id: i.id,
           product_id: i.product_id || null,
           batch_id: i.batch_id || null,
+          unit_id: i.unit_id || null,
+          serial: i.serial || null,
           name: i.name,
           desc: i.desc,
           price: i.price,
@@ -2463,6 +2696,46 @@ export default function POSBilling() {
                 />
               </div>
 
+              <div>
+                <label className="block text-[10px] font-bold text-gray-600 uppercase tracking-widest mb-1.5">
+                  Category
+                </label>
+                <input
+                  type="text"
+                  list="catalog-category-list"
+                  placeholder="e.g., Phones, Chargers, Laptops"
+                  className="w-full bg-white border border-gray-200 hover:border-gray-300 focus:border-[#3F3F46] rounded-lg px-3.5 py-2.5 text-sm font-semibold text-black focus:outline-none transition-colors shadow-xs"
+                  value={newCatCategory}
+                  onChange={(e) => setNewCatCategory(e.target.value)}
+                />
+                <datalist id="catalog-category-list">
+                  {categories.map((c) => (
+                    <option key={c.id} value={c.name} />
+                  ))}
+                </datalist>
+                <p className="text-[9px] text-gray-400 font-semibold mt-1">
+                  Pick an existing category or type a new one (it will be added automatically)
+                </p>
+              </div>
+
+              <label className="flex items-center gap-2.5 py-1 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  className="w-4 h-4 accent-[#3F3F46] cursor-pointer"
+                  checked={newCatTracksSerial}
+                  onChange={(e) => setNewCatTracksSerial(e.target.checked)}
+                />
+                <span className="text-xs font-bold text-black">
+                  This product has IMEI / serial numbers
+                </span>
+              </label>
+              {newCatTracksSerial && (
+                <p className="text-[9px] text-gray-500 font-semibold -mt-2">
+                  Each unit is tracked individually. Stock is set by the number of serials you enter below.
+                  {editingCatalogId && " To add more units later, use “+ Add Batch”."}
+                </p>
+              )}
+
               <div className="grid grid-cols-2 gap-4">
                 <div>
                   <label className="block text-[10px] font-bold text-gray-600 uppercase tracking-widest mb-1.5">
@@ -2508,26 +2781,28 @@ export default function POSBilling() {
               </div>
 
               <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-[10px] font-bold text-gray-600 uppercase tracking-widest mb-1.5">
-                    Stock Quantity
-                  </label>
-                  <input
-                    type="number"
-                    min={0}
-                    placeholder="0"
-                    className="w-full bg-white border border-gray-200 hover:border-gray-300 focus:border-[#3F3F46] rounded-lg px-3.5 py-2.5 text-sm font-bold text-black focus:outline-none transition-colors shadow-xs"
-                    value={newCatStock}
-                    onWheel={(e) => e.currentTarget.blur()}
-                    onChange={(e) =>
-                      setNewCatStock(
-                        e.target.value === ""
-                          ? ""
-                          : parseInt(e.target.value, 10),
-                      )
-                    }
-                  />
-                </div>
+                {!newCatTracksSerial && (
+                  <div>
+                    <label className="block text-[10px] font-bold text-gray-600 uppercase tracking-widest mb-1.5">
+                      Stock Quantity
+                    </label>
+                    <input
+                      type="number"
+                      min={0}
+                      placeholder="0"
+                      className="w-full bg-white border border-gray-200 hover:border-gray-300 focus:border-[#3F3F46] rounded-lg px-3.5 py-2.5 text-sm font-bold text-black focus:outline-none transition-colors shadow-xs"
+                      value={newCatStock}
+                      onWheel={(e) => e.currentTarget.blur()}
+                      onChange={(e) =>
+                        setNewCatStock(
+                          e.target.value === ""
+                            ? ""
+                            : parseInt(e.target.value, 10),
+                        )
+                      }
+                    />
+                  </div>
+                )}
 
                 <div>
                   <label className="block text-[10px] font-bold text-gray-600 uppercase tracking-widest mb-1.5">
@@ -2550,6 +2825,10 @@ export default function POSBilling() {
                   />
                 </div>
               </div>
+
+              {newCatTracksSerial && !editingCatalogId && (
+                <div>{renderSerialEntry()}</div>
+              )}
 
               <div className="grid grid-cols-2 gap-4">
                 <div>
@@ -2676,37 +2955,50 @@ export default function POSBilling() {
               </div>
 
               {/* Row 2: Stock Quantity & Batch Number */}
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-[10px] font-bold text-gray-600 uppercase tracking-widest mb-1.5">
-                    Stock Quantity
-                  </label>
-                  <input
-                    type="number"
-                    placeholder="0"
-                    className="w-full bg-white border border-gray-200 hover:border-gray-300 focus:border-[#3F3F46] rounded-lg px-3.5 py-2.5 text-sm font-bold text-black focus:outline-none transition-colors shadow-xs"
-                    value={newCatStock}
-                    onChange={(e) =>
-                      setNewCatStock(
-                        e.target.value ? Number(e.target.value) : "",
-                      )
-                    }
-                    onWheel={(e) => e.currentTarget.blur()}
-                  />
-                </div>
-                <div>
-                  <label className="block text-[10px] font-bold text-gray-600 uppercase tracking-widest mb-1.5">
-                    Batch Number
-                  </label>
-                  <input
-                    type="text"
-                    placeholder="e.g., LOT-002"
-                    className="w-full bg-white border border-gray-200 hover:border-gray-300 focus:border-[#3F3F46] rounded-lg px-3.5 py-2.5 text-sm font-semibold text-black focus:outline-none transition-colors shadow-xs"
-                    value={newCatBatch}
-                    onChange={(e) => setNewCatBatch(e.target.value)}
-                  />
-                </div>
-              </div>
+              {(() => {
+                const batchTracksSerial = Boolean(
+                  catalog.find((c) => c.id === batchTargetProductId)?.tracksSerial,
+                );
+                return (
+                  <>
+                    <div className="grid grid-cols-2 gap-4">
+                      {!batchTracksSerial && (
+                        <div>
+                          <label className="block text-[10px] font-bold text-gray-600 uppercase tracking-widest mb-1.5">
+                            Stock Quantity
+                          </label>
+                          <input
+                            type="number"
+                            placeholder="0"
+                            className="w-full bg-white border border-gray-200 hover:border-gray-300 focus:border-[#3F3F46] rounded-lg px-3.5 py-2.5 text-sm font-bold text-black focus:outline-none transition-colors shadow-xs"
+                            value={newCatStock}
+                            onChange={(e) =>
+                              setNewCatStock(
+                                e.target.value ? Number(e.target.value) : "",
+                              )
+                            }
+                            onWheel={(e) => e.currentTarget.blur()}
+                          />
+                        </div>
+                      )}
+                      <div>
+                        <label className="block text-[10px] font-bold text-gray-600 uppercase tracking-widest mb-1.5">
+                          Batch Number
+                        </label>
+                        <input
+                          type="text"
+                          placeholder="e.g., LOT-002"
+                          className="w-full bg-white border border-gray-200 hover:border-gray-300 focus:border-[#3F3F46] rounded-lg px-3.5 py-2.5 text-sm font-semibold text-black focus:outline-none transition-colors shadow-xs"
+                          value={newCatBatch}
+                          onChange={(e) => setNewCatBatch(e.target.value)}
+                        />
+                      </div>
+                    </div>
+
+                    {batchTracksSerial && <div>{renderSerialEntry()}</div>}
+                  </>
+                );
+              })()}
 
               {/* Submit Button */}
               <button
@@ -2716,6 +3008,121 @@ export default function POSBilling() {
                 <PackagePlus className="w-4 h-4" />
                 Save New Batch
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Manage IMEIs / Serials Modal */}
+      {showUnitsModal && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-[100] flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl shadow-[0_20px_60px_rgba(0,0,0,0.3)] border border-black/10 w-full max-w-lg overflow-hidden transform animate-in zoom-in-95 duration-200">
+            <div className="px-6 py-5 bg-white border-b border-black/10 flex justify-between items-center">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 bg-[#3F3F46]/10 rounded-xl flex items-center justify-center text-[#3F3F46]">
+                  <List className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="font-extrabold text-base text-black tracking-tight">
+                    Manage IMEIs / Serials
+                  </h3>
+                  <p className="text-[11px] text-gray-500 font-medium">
+                    {unitsTargetName}
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => {
+                  setShowUnitsModal(false);
+                  setUnitsTargetProductId(null);
+                  setUnitRows([]);
+                  setSerialInputs([]);
+                }}
+                className="w-8 h-8 flex items-center justify-center rounded-lg bg-gray-100 hover:bg-gray-200 text-gray-700 transition-colors cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="p-6 space-y-4 max-h-[80vh] overflow-y-auto bg-white">
+              {isLoadingUnits ? (
+                <div className="py-10 flex items-center justify-center text-gray-400">
+                  <Loader2 className="w-5 h-5 animate-spin" />
+                </div>
+              ) : (
+                <>
+                  <div>
+                    <div className="flex items-center justify-between mb-2">
+                      <label className="text-[10px] font-bold text-gray-600 uppercase tracking-widest">
+                        Existing units ({unitRows.length})
+                      </label>
+                      <span className="text-[10px] font-bold text-green-600">
+                        {unitRows.filter((u) => u.status === "AVAILABLE").length} available
+                      </span>
+                    </div>
+                    {unitRows.length === 0 ? (
+                      <p className="text-xs text-gray-400 font-semibold py-3">
+                        No units yet. Add some below.
+                      </p>
+                    ) : (
+                      <div className="space-y-1.5 max-h-52 overflow-y-auto pr-1">
+                        {unitRows.map((u, idx) => {
+                          const sold = u.status === "SOLD";
+                          return (
+                            <div key={u.id} className="flex items-center gap-2">
+                              <span className="w-5 text-[10px] font-bold text-gray-400 text-right shrink-0">
+                                {idx + 1}
+                              </span>
+                              <input
+                                type="text"
+                                disabled={sold}
+                                value={u.serial}
+                                onChange={(e) => updateUnitRow(u.id, e.target.value)}
+                                onBlur={() => !sold && saveUnitSerial(u)}
+                                className={`w-full border rounded-lg px-3 py-2 text-sm font-mono focus:outline-none transition-colors ${
+                                  sold
+                                    ? "bg-gray-100 border-gray-200 text-gray-400 cursor-not-allowed"
+                                    : "bg-white border-gray-200 hover:border-gray-300 focus:border-[#3F3F46] text-black"
+                                }`}
+                              />
+                              {sold ? (
+                                <span className="text-[9px] font-bold text-[#27272A] bg-[#27272A]/10 border border-[#27272A]/20 rounded px-2 py-1 shrink-0">
+                                  SOLD
+                                </span>
+                              ) : (
+                                <button
+                                  onClick={() => deleteUnitRow(u)}
+                                  className="text-gray-400 hover:text-[#27272A] p-1.5 rounded-lg border border-gray-200 hover:border-transparent hover:bg-[#F4F4F5] transition-colors shrink-0"
+                                  title="Remove unit"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </button>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                    <p className="text-[9px] text-gray-500 font-semibold mt-1">
+                      Edit a serial and click away to save. Sold units are locked.
+                    </p>
+                  </div>
+
+                  <div className="border-t border-black/10 pt-4">
+                    <label className="block text-[10px] font-bold text-gray-600 uppercase tracking-widest mb-2">
+                      Add more units
+                    </label>
+                    {renderSerialEntry()}
+                    <button
+                      onClick={addUnitsToProduct}
+                      className="w-full py-3 mt-3 bg-[#3F3F46] hover:bg-[#27272A] text-white rounded-xl font-bold text-xs uppercase tracking-widest transition-colors shadow-sm cursor-pointer flex items-center justify-center gap-2"
+                    >
+                      <Plus className="w-4 h-4" />
+                      Add units
+                    </button>
+                  </div>
+                </>
+              )}
             </div>
           </div>
         </div>
@@ -3255,41 +3662,57 @@ export default function POSBilling() {
                               {/* Catalog Dropdown Popover */}
                               {activeCatalogRowId === item.id && (
                                 <div className="absolute z-[80] top-full left-0 mt-1 w-full sm:w-80 max-w-[calc(100vw-2.5rem)] bg-[#FFFFFF] border-2 border-black/10 rounded-lg shadow-2xl overflow-hidden animate-in fade-in slide-in-from-top-2 duration-150">
-                                  <div className="p-2 border-b border-black/10 bg-[#FFFFFF] flex items-center justify-between gap-2">
-                                    <input
-                                      type="text"
-                                      placeholder="Search catalog items..."
-                                      className="w-full bg-white border border-black/10 focus:border-[#3F3F46] rounded-md px-3 py-1.5 text-xs font-semibold focus:outline-none transition-colors"
-                                      value={catalogSearch}
+                                  <div className="p-2 border-b border-black/10 bg-[#FFFFFF] space-y-2">
+                                    <div className="flex items-center justify-between gap-2">
+                                      <input
+                                        type="text"
+                                        placeholder="Search catalog items..."
+                                        className="w-full bg-white border border-black/10 focus:border-[#3F3F46] rounded-md px-3 py-1.5 text-xs font-semibold focus:outline-none transition-colors"
+                                        value={catalogSearch}
+                                        onChange={(e) =>
+                                          setCatalogSearch(e.target.value)
+                                        }
+                                        autoFocus
+                                      />
+                                      <button
+                                        onClick={() =>
+                                          setActiveCatalogRowId(null)
+                                        }
+                                        className="text-[#000000] hover:text-tertiary cursor-pointer"
+                                      >
+                                        <X className="w-4 h-4" />
+                                      </button>
+                                    </div>
+                                    <select
+                                      value={activeCategory}
                                       onChange={(e) =>
-                                        setCatalogSearch(e.target.value)
+                                        setActiveCategory(e.target.value)
                                       }
-                                      autoFocus
-                                    />
-                                    <button
-                                      onClick={() =>
-                                        setActiveCatalogRowId(null)
-                                      }
-                                      className="text-[#000000] hover:text-tertiary cursor-pointer"
+                                      className="w-full bg-white border border-black/10 focus:border-[#3F3F46] rounded-md px-3 py-1.5 text-xs font-bold text-[#000000] focus:outline-none transition-colors cursor-pointer"
                                     >
-                                      <X className="w-4 h-4" />
-                                    </button>
+                                      <option value="ALL">All categories</option>
+                                      {categories.map((c) => (
+                                        <option key={c.id} value={c.name}>
+                                          {c.name}
+                                        </option>
+                                      ))}
+                                    </select>
                                   </div>
                                   <div className="max-h-48 overflow-y-auto">
-                                    {catalog.filter((c) =>
-                                      c.name
-                                        .toLowerCase()
-                                        .includes(catalogSearch.toLowerCase()),
-                                    ).length > 0 ? (
-                                      catalog
-                                        .filter((c) =>
+                                    {(() => {
+                                      const list = catalog.filter(
+                                        (c) =>
+                                          (activeCategory === "ALL" ||
+                                            (c.category || "General") ===
+                                              activeCategory) &&
                                           c.name
                                             .toLowerCase()
                                             .includes(
                                               catalogSearch.toLowerCase(),
                                             ),
-                                        )
-                                        .map((catItem) => {
+                                      );
+                                      return list.length > 0 ? (
+                                        list.map((catItem) => {
                                           const isOutOfStock =
                                             catItem.stockQuantity === 0;
                                           return (
@@ -3314,10 +3737,38 @@ export default function POSBilling() {
                                                   );
                                                   updateItem(
                                                     item.id,
+                                                    "desc",
+                                                    catItem.desc || "",
+                                                  );
+                                                  updateItem(
+                                                    item.id,
                                                     "product_id",
                                                     catItem.productId ||
                                                       catItem.id,
                                                   );
+                                                  // Reset any prior serialized-unit selection.
+                                                  updateItem(
+                                                    item.id,
+                                                    "unit_id",
+                                                    null,
+                                                  );
+                                                  updateItem(
+                                                    item.id,
+                                                    "serial",
+                                                    null,
+                                                  );
+                                                  updateItem(
+                                                    item.id,
+                                                    "batch_id",
+                                                    null,
+                                                  );
+                                                  if (catItem.tracksSerial) {
+                                                    updateItem(
+                                                      item.id,
+                                                      "qty",
+                                                      1,
+                                                    );
+                                                  }
                                                   if (
                                                     catItem.price !== undefined
                                                   ) {
@@ -3391,24 +3842,25 @@ export default function POSBilling() {
                                             </div>
                                           );
                                         })
-                                    ) : (
-                                      <div className="px-4 py-4 text-center">
-                                        <div className="text-xs text-[#000000] font-semibold mb-2">
-                                          No items match "{catalogSearch}"
+                                      ) : (
+                                        <div className="px-4 py-4 text-center">
+                                          <div className="text-xs text-[#000000] font-semibold mb-2">
+                                            No items match "{catalogSearch}"
+                                          </div>
+                                          <button
+                                            onClick={() => {
+                                              setNewCatName(catalogSearch);
+                                              setCatalogTargetRowId(item.id);
+                                              setShowCatalogModal(true);
+                                              setActiveCatalogRowId(null);
+                                            }}
+                                            className="text-[10px] font-bold text-[#3F3F46] bg-[#3F3F46]/10 hover:bg-[#3F3F46]/20 px-3 py-1.5 rounded uppercase tracking-wider transition-colors cursor-pointer"
+                                          >
+                                            + Add to Catalog
+                                          </button>
                                         </div>
-                                        <button
-                                          onClick={() => {
-                                            setNewCatName(catalogSearch);
-                                            setCatalogTargetRowId(item.id);
-                                            setShowCatalogModal(true);
-                                            setActiveCatalogRowId(null);
-                                          }}
-                                          className="text-[10px] font-bold text-[#3F3F46] bg-[#3F3F46]/10 hover:bg-[#3F3F46]/20 px-3 py-1.5 rounded uppercase tracking-wider transition-colors cursor-pointer"
-                                        >
-                                          + Add to Catalog
-                                        </button>
-                                      </div>
-                                    )}
+                                      );
+                                    })()}
                                   </div>
                                 </div>
                               )}
@@ -3476,6 +3928,68 @@ export default function POSBilling() {
                                 </button>
                               </div>
                             </div>
+
+                            {/* IMEI / Serial picker — only for serialized products */}
+                            {(() => {
+                              const cat = catalog.find(
+                                (c) =>
+                                  c.productId === item.product_id ||
+                                  c.id === item.product_id,
+                              );
+                              if (!cat?.tracksSerial) return null;
+                              const units = cat.availableUnits || [];
+                              return (
+                                <div className="sm:col-span-12 w-full">
+                                  <label className="block text-[10px] font-bold text-[#3F3F46] uppercase tracking-widest mb-1">
+                                    IMEI / Serial
+                                  </label>
+                                  {units.length === 0 ? (
+                                    <div className="text-[11px] font-bold text-[#27272A] bg-[#27272A]/10 border border-[#27272A]/20 rounded-lg px-3 py-2">
+                                      No units in stock for this product.
+                                    </div>
+                                  ) : (
+                                    <select
+                                      value={item.unit_id || ""}
+                                      onChange={(e) => {
+                                        const u = units.find(
+                                          (x) => x.id === e.target.value,
+                                        );
+                                        updateItem(
+                                          item.id,
+                                          "unit_id",
+                                          u ? u.id : null,
+                                        );
+                                        updateItem(
+                                          item.id,
+                                          "serial",
+                                          u ? u.serial : null,
+                                        );
+                                        updateItem(
+                                          item.id,
+                                          "batch_id",
+                                          u ? u.batch_id : null,
+                                        );
+                                        updateItem(item.id, "qty", 1);
+                                      }}
+                                      className={`w-full bg-white border rounded-lg px-3 py-2 text-xs font-semibold text-[#000000] focus:outline-none focus:border-[#3F3F46] transition-colors cursor-pointer ${
+                                        item.unit_id
+                                          ? "border-black/10"
+                                          : "border-[#3F3F46]/60"
+                                      }`}
+                                    >
+                                      <option value="">
+                                        Select IMEI / serial…
+                                      </option>
+                                      {units.map((u) => (
+                                        <option key={u.id} value={u.id}>
+                                          {u.serial}
+                                        </option>
+                                      ))}
+                                    </select>
+                                  )}
+                                </div>
+                              );
+                            })()}
                           </div>
                         ))}
                       </div>
@@ -6633,6 +7147,17 @@ export default function POSBilling() {
                                         </p>
                                       </div>
                                       <div className="flex items-center gap-2">
+                                        {p.tracksSerial && (
+                                          <button
+                                            onClick={() => {
+                                              setSerialInputs([]);
+                                              openUnitsModal(p.id, p.name);
+                                            }}
+                                            className="text-[10px] font-bold text-[#3F3F46] bg-[#3F3F46]/10 hover:bg-[#3F3F46]/20 px-3 py-1.5 rounded-lg transition-colors cursor-pointer inline-flex items-center gap-1"
+                                          >
+                                            <List className="w-3 h-3" /> Manage IMEIs
+                                          </button>
+                                        )}
                                         <button
                                           onClick={() => {
                                             setBatchTargetProductId(p.id);
