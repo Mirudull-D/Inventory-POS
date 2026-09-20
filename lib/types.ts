@@ -51,10 +51,11 @@ export type Customer = {
   id: string;
   name: string;
   phone: string;
+  address: string | null;
   created_at: string;
 };
 
-export type PaymentMode = 'CASH' | 'TVS' | 'BAJAJ' | 'HDFC' | 'DMI';
+export type PaymentMode = 'CASH' | 'TVS' | 'BAJAJ' | 'HDP' | 'DMI';
 
 export type OrderRow = {
   id: string;
@@ -91,6 +92,7 @@ export type OrderItemRow = {
 export type OrderWithRelations = OrderRow & {
   customer_name: string;
   customer_phone: string;
+  customer_address: string | null;
   items: OrderItemRow[];
 };
 

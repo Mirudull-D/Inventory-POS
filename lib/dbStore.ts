@@ -264,12 +264,12 @@ export const dbStore = {
   },
 
   // CUSTOMERS
-  async upsertCustomer(name: string, phone: string): Promise<Customer> {
+  async upsertCustomer(name: string, phone: string, address?: string | null): Promise<Customer> {
     const id = uid();
     const rows = await sql`
-      INSERT INTO customers (id, name, phone)
-      VALUES (${id}, ${name}, ${phone})
-      ON CONFLICT (phone) DO UPDATE SET name = EXCLUDED.name
+      INSERT INTO customers (id, name, phone, address)
+      VALUES (${id}, ${name}, ${phone}, ${address || null})
+      ON CONFLICT (phone) DO UPDATE SET name = EXCLUDED.name, address = EXCLUDED.address
       RETURNING *
     `;
     return rows[0] as Customer;
@@ -283,7 +283,7 @@ export const dbStore = {
 
   async listOrdersWithRelations(): Promise<OrderWithRelations[]> {
     const orders = await sql`
-      SELECT o.*, c.name as customer_name, c.phone as customer_phone
+      SELECT o.*, c.name as customer_name, c.phone as customer_phone, c.address as customer_address
       FROM orders o
       JOIN customers c ON c.id = o.customer_id
       ORDER BY o.created_at DESC
@@ -305,7 +305,7 @@ export const dbStore = {
 
   async getOrderWithRelations(id: string): Promise<OrderWithRelations | null> {
     const orders = await sql`
-      SELECT o.*, c.name as customer_name, c.phone as customer_phone
+      SELECT o.*, c.name as customer_name, c.phone as customer_phone, c.address as customer_address
       FROM orders o
       JOIN customers c ON c.id = o.customer_id
       WHERE o.id = ${id}
@@ -393,6 +393,7 @@ export const dbStore = {
     orderId: string;
     customerName: string;
     customerPhone: string;
+    customerAddress?: string | null;
     source: 'ONLINE' | 'OFFLINE';
     isGst: boolean;
     billDate: string;
@@ -422,7 +423,7 @@ export const dbStore = {
 
     // Concurrently upsert customer and fetch batches for all products in 1 roundtrip
     const [customer, allBatches] = await Promise.all([
-      this.upsertCustomer(payload.customerName, payload.customerPhone),
+      this.upsertCustomer(payload.customerName, payload.customerPhone, payload.customerAddress),
       productIds.length > 0
         ? sql`
             SELECT * FROM product_batches

@@ -273,6 +273,11 @@ export default async function InvoicePage({
                 Walk-in Counter Sale
               </div>
             )}
+            {order.customer_address && (
+              <div className="text-xs text-zinc-600 mt-0.5 max-w-[200px]">
+                {order.customer_address}
+              </div>
+            )}
           </div>
 
           <div className="sm:text-right text-xs text-zinc-500">

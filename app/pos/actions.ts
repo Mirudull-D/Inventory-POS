@@ -108,6 +108,7 @@ export async function submitOrder(payload: {
   orderId: string;
   customerName: string;
   customerPhone: string;
+  customerAddress?: string | null;
   source: 'ONLINE' | 'OFFLINE';
   isGst: boolean;
   billDate: string;

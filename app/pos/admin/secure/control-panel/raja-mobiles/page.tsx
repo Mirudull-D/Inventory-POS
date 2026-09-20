@@ -91,7 +91,7 @@ const EXPENSE_PAYMENT_MODES = ["CASH", "UPI", "CARD", "BANK", "OTHER"] as const;
 
 // Payment / financing options available at the point of sale.
 // Kept in sync with the CHECK constraint on orders.payment_mode in schema.sql.
-const ORDER_PAYMENT_MODES = ["CASH", "TVS", "BAJAJ", "HDFC", "DMI"] as const;
+const ORDER_PAYMENT_MODES = ["CASH", "TVS", "BAJAJ", "HDP", "DMI"] as const;
 type OrderPaymentMode = (typeof ORDER_PAYMENT_MODES)[number];
 
 // Shared date-window test reused by the Expenses tab and the analytics dashboard.
@@ -168,6 +168,7 @@ type CompletedOrder = {
   id: string;
   customerName: string;
   customerPhone: string;
+  customerAddress?: string | null;
   source: "ONLINE" | "OFFLINE";
   isGst: boolean;
   items: OrderItem[];
@@ -410,6 +411,7 @@ export default function POSBilling() {
   const [isOnline, setIsOnline] = useState(false);
   const [customerName, setCustomerName] = useState("");
   const [customerPhone, setCustomerPhone] = useState("");
+  const [customerAddress, setCustomerAddress] = useState("");
   const [customOrderDate, setCustomOrderDate] = useState<string>(
     new Date().toISOString().split("T")[0],
   );
@@ -609,6 +611,7 @@ export default function POSBilling() {
             id: o.id,
             customerName: o.customer_name || "Guest",
             customerPhone: o.customer_phone,
+            customerAddress: o.customer_address || null,
             source: o.source,
             isGst: Boolean(o.is_gst),
             items: o.items.map((i) => ({
@@ -1351,6 +1354,7 @@ export default function POSBilling() {
         orderId: `INV-${new Date().getFullYear()}-${Math.random().toString(36).substr(2, 5).toUpperCase()}`,
         customerName: customerName || "Guest",
         customerPhone: customerPhone,
+        customerAddress: customerAddress || null,
         source: isOnline ? "ONLINE" : "OFFLINE",
         isGst: applyGST,
         billDate: orderTimestamp,
@@ -1381,6 +1385,7 @@ export default function POSBilling() {
         id: newOrderId,
         customerName: customerName.trim() || "Guest",
         customerPhone: customerPhone,
+        customerAddress: customerAddress.trim() || null,
         source: isOnline ? "ONLINE" : "OFFLINE",
         isGst: Boolean(applyGST),
         items: itemsToSave.map((i, idx) => ({
@@ -1434,6 +1439,7 @@ export default function POSBilling() {
       // Reset Form immediately
       setCustomerName("");
       setCustomerPhone("");
+      setCustomerAddress("");
       setCustomOrderDate(new Date().toISOString().split("T")[0]);
       setItems([{ id: "1", name: "", desc: "", price: 0, qty: 1 }]);
       setDiscountValue(0);
@@ -3554,6 +3560,18 @@ export default function POSBilling() {
                           onChange={(e) => setCustomOrderDate(e.target.value)}
                         />
                       </div>
+                    </div>
+                    <div className="mt-6">
+                      <label className="block text-[10px] font-bold text-[#000000] uppercase tracking-[0.15em] mb-2">
+                        Customer Address (Optional)
+                      </label>
+                      <input
+                        type="text"
+                        placeholder="Enter full address"
+                        className="w-full bg-[#FFFFFF]/40 border border-black/10 hover:border-black/10 focus:border-[#3F3F46] focus:bg-white rounded-lg px-4 py-2.5 text-[#000000] text-sm font-semibold focus:outline-none transition-colors placeholder:text-[#000000] placeholder:font-normal shadow-sm"
+                        value={customerAddress}
+                        onChange={(e) => setCustomerAddress(e.target.value)}
+                      />
                     </div>
                   </div>
 
@@ -7308,6 +7326,14 @@ export default function POSBilling() {
                     </div>
                     <div className="text-sm font-semibold text-[#000000]">
                       {selectedOrder.customerPhone || "N/A"}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-[10px] font-bold text-[#000000] uppercase tracking-wider mb-1">
+                      Address
+                    </div>
+                    <div className="text-sm font-semibold text-[#000000]">
+                      {selectedOrder.customerAddress || "N/A"}
                     </div>
                   </div>
                   <div>
