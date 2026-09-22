@@ -49,6 +49,8 @@ import {
   ArrowUp,
   ArrowDown,
   Loader2,
+  Clock,
+  MessageSquare,
 } from "lucide-react";
 import {
   verifyPasscode,
@@ -70,8 +72,14 @@ import {
   fetchProductUnits,
   editUnitSerial,
   removeUnit,
+  fetchAdvanceOrders,
+  createAdvanceOrder,
+  cancelAdvanceOrder,
+  removeAdvanceOrder,
+  finalizeAdvanceOrder,
+  setAdvanceOrderStatus,
 } from "@/app/pos/actions";
-import { ProductWithBatches, ProductBatch, ProductUnit, CartItem, Expense, Category } from "@/lib/types";
+import { ProductWithBatches, ProductBatch, ProductUnit, CartItem, Expense, Category, AdvanceOrderWithRelations, AdvanceOrderStatus } from "@/lib/types";
 
 // Preset expense categories (users can also type a custom one)
 const EXPENSE_CATEGORIES = [
@@ -406,7 +414,7 @@ export default function POSBilling() {
 
   const [activeCategory, setActiveCategory] = useState<string>("ALL");
   const [activeTab, setActiveTab] = useState<
-    "billing" | "orders" | "analytics" | "inventory" | "alerts" | "expenses"
+    "billing" | "orders" | "analytics" | "inventory" | "alerts" | "expenses" | "advance"
   >("billing");
   const [isOnline, setIsOnline] = useState(false);
   const [customerName, setCustomerName] = useState("");
@@ -419,6 +427,27 @@ export default function POSBilling() {
     { id: "1", name: "", desc: "", price: 0, qty: 1 },
   ]);
   const [orders, setOrders] = useState<CompletedOrder[]>([]);
+
+  // Advance orders (partial-payment holds) — separate from real revenue.
+  const [advanceOrders, setAdvanceOrders] = useState<AdvanceOrderWithRelations[]>([]);
+  const [showAdvanceSaveModal, setShowAdvanceSaveModal] = useState(false);
+  const [advDeposit, setAdvDeposit] = useState<number | "">("");
+  const [advDeliveryDate, setAdvDeliveryDate] = useState<string>("");
+  const [advNotes, setAdvNotes] = useState<string>("");
+  const [advDepositPaymentMode, setAdvDepositPaymentMode] = useState<OrderPaymentMode>("CASH");
+  const [isSavingAdvance, setIsSavingAdvance] = useState(false);
+
+  const [selectedAdvance, setSelectedAdvance] = useState<AdvanceOrderWithRelations | null>(null);
+  const [advanceViewMode, setAdvanceViewMode] = useState<"view" | "receive" | null>(null);
+  const [receiveDiscountType, setReceiveDiscountType] = useState<"FIXED" | "PERCENT">("FIXED");
+  const [receiveDiscountValue, setReceiveDiscountValue] = useState<number | "">("");
+  const [receivePaymentMode, setReceivePaymentMode] = useState<OrderPaymentMode>("CASH");
+  const [receiveIsGst, setReceiveIsGst] = useState(false);
+  const [receiveGstPct, setReceiveGstPct] = useState<number>(18);
+  const [isFinalizing, setIsFinalizing] = useState(false);
+
+  const [advSearchQuery, setAdvSearchQuery] = useState("");
+  const [advStatusFilter, setAdvStatusFilter] = useState<"ALL" | AdvanceOrderStatus>("ALL");
   const [discountValue, setDiscountValue] = useState<number>(0);
   const [discountType, setDiscountType] = useState<"fixed" | "percent">(
     "fixed",
@@ -593,12 +622,26 @@ export default function POSBilling() {
   const fetchData = async () => {
     setIsRefreshing(true);
     try {
-      const [productsData, ordersData, expensesData, categoriesData] = await Promise.all([
+      const [productsData, ordersData, expensesData, categoriesData, advanceData] = await Promise.all([
         fetchProducts(),
         fetchOrders(),
         fetchExpenses(),
         fetchCategories(),
+        fetchAdvanceOrders(),
       ]);
+      setAdvanceOrders(
+        advanceData.map((a) => ({
+          ...a,
+          subtotal: Number(a.subtotal) || 0,
+          total_amount: Number(a.total_amount) || 0,
+          deposit_amount: Number(a.deposit_amount) || 0,
+          items: a.items.map((i) => ({
+            ...i,
+            snapshot_price: Number(i.snapshot_price) || 0,
+            quantity: Number(i.quantity) || 0,
+          })),
+        })),
+      );
       setCatalog(productsData.map(productToCatalogItem));
       setCategories(categoriesData);
       setExpenses(
@@ -1249,6 +1292,191 @@ export default function POSBilling() {
     setApplyGST(on);
     if (on) {
       setGstPercentage(suggestGstRate());
+    }
+  };
+
+  // ─────────────────────────────────────────
+  // ADVANCE ORDERS — deposit-only holds
+  // ─────────────────────────────────────────
+
+  // Format: DEP-YYYYMMDD-NNNN. Sequential-looking, unique enough for one shop.
+  const generateAdvanceOrderId = () => {
+    const d = new Date();
+    const ymd = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, "0")}${String(d.getDate()).padStart(2, "0")}`;
+    const rand = Math.floor(1000 + Math.random() * 9000);
+    return `DEP-${ymd}-${rand}`;
+  };
+
+  const openAdvanceSaveModal = () => {
+    if (!customerPhone || customerPhone.length !== 10) {
+      alert("Please enter a valid 10-digit mobile contact number before saving an advance order.");
+      return;
+    }
+    const hasInvalidItem = items.some(
+      (i) => !i.name || i.name.trim() === "" || i.price === undefined || i.price <= 0,
+    );
+    if (hasInvalidItem || items.length === 0) {
+      alert("Please ensure all items have a valid name and price greater than 0 before saving an advance order.");
+      return;
+    }
+    setAdvDeposit("");
+    setAdvDeliveryDate("");
+    setAdvNotes("");
+    setAdvDepositPaymentMode(paymentMode);
+    setShowAdvanceSaveModal(true);
+  };
+
+  const saveAdvanceOrder = async () => {
+    if (isSavingAdvance) return;
+    const deposit = Number(advDeposit) || 0;
+    if (deposit <= 0) {
+      alert("Deposit amount must be greater than 0.");
+      return;
+    }
+    if (deposit > grandTotal) {
+      alert("Deposit cannot exceed the grand total. Use 'Complete Sale' for full payment.");
+      return;
+    }
+
+    const advId = generateAdvanceOrderId();
+    setIsSavingAdvance(true);
+    try {
+      await createAdvanceOrder({
+        advanceOrderId: advId,
+        customerName: customerName || "Guest",
+        customerPhone,
+        customerAddress: customerAddress || null,
+        subtotal,
+        totalAmount: grandTotal,
+        depositAmount: deposit,
+        depositPaymentMode: advDepositPaymentMode,
+        deliveryDate: advDeliveryDate || null,
+        notes: advNotes.trim() || null,
+        items: items.map((i) => ({
+          product_id: i.product_id || null,
+          snapshot_name: i.name,
+          snapshot_desc: i.desc || null,
+          snapshot_price: i.price,
+          quantity: i.qty,
+        })),
+      });
+
+      // Reset billing form.
+      setItems([{ id: "1", name: "", desc: "", price: 0, qty: 1 }]);
+      setCustomerName("");
+      setCustomerPhone("");
+      setCustomerAddress("");
+      setDiscountValue(0);
+      setDeliveryFee(0);
+      setCashReceived(0);
+      setShowAdvanceSaveModal(false);
+      await fetchData();
+      alert(`Advance order ${advId} saved. Deposit ₹${deposit.toLocaleString(undefined, { minimumFractionDigits: 2 })} recorded.`);
+      setActiveTab("advance");
+    } catch (err) {
+      console.error("Failed to save advance order:", err);
+      alert("Could not save the advance order. Please try again.");
+    } finally {
+      setIsSavingAdvance(false);
+    }
+  };
+
+  const openReceiveBalance = (adv: AdvanceOrderWithRelations) => {
+    setSelectedAdvance(adv);
+    setAdvanceViewMode("receive");
+    setReceiveDiscountType("FIXED");
+    setReceiveDiscountValue("");
+    setReceivePaymentMode("CASH");
+    setReceiveIsGst(false);
+    setReceiveGstPct(18);
+  };
+
+  const openAdvanceView = (adv: AdvanceOrderWithRelations) => {
+    setSelectedAdvance(adv);
+    setAdvanceViewMode("view");
+  };
+
+  const closeAdvanceDialog = () => {
+    setSelectedAdvance(null);
+    setAdvanceViewMode(null);
+  };
+
+  const balanceRemaining = (adv: AdvanceOrderWithRelations) =>
+    Math.max(0, Number(adv.total_amount) - Number(adv.deposit_amount));
+
+  const receiveBalanceDiscountAmount = (() => {
+    if (!selectedAdvance) return 0;
+    const base = balanceRemaining(selectedAdvance);
+    const val = Number(receiveDiscountValue) || 0;
+    return receiveDiscountType === "PERCENT" ? base * (val / 100) : val;
+  })();
+
+  const receiveBalanceFinalAmount = (() => {
+    if (!selectedAdvance) return 0;
+    return Math.max(0, balanceRemaining(selectedAdvance) - receiveBalanceDiscountAmount);
+  })();
+
+  const confirmReceiveBalance = async () => {
+    if (!selectedAdvance || isFinalizing) return;
+    if (receiveBalanceDiscountAmount > balanceRemaining(selectedAdvance)) {
+      alert("Discount cannot exceed the remaining balance.");
+      return;
+    }
+    setIsFinalizing(true);
+    try {
+      const invoiceId = `INV-${new Date().getFullYear()}-${Math.random().toString(36).substr(2, 5).toUpperCase()}`;
+      await finalizeAdvanceOrder({
+        advanceOrderId: selectedAdvance.id,
+        invoiceId,
+        isGst: receiveIsGst,
+        gstPercentage: receiveIsGst ? receiveGstPct : 0,
+        discountType: receiveDiscountType,
+        discountValue: Number(receiveDiscountValue) || 0,
+        discountAmount: receiveBalanceDiscountAmount,
+        deliveryFee: 0,
+        paymentMode: receivePaymentMode,
+        billDate: new Date().toISOString(),
+      });
+      closeAdvanceDialog();
+      await fetchData();
+      alert(`Payment received. Invoice ${invoiceId} created and revenue recognized.`);
+    } catch (err) {
+      console.error("Failed to finalize advance order:", err);
+      alert("Could not finalize the advance order. Please try again.");
+    } finally {
+      setIsFinalizing(false);
+    }
+  };
+
+  const doCancelAdvance = async (adv: AdvanceOrderWithRelations) => {
+    if (!confirm(`Cancel advance order ${adv.id}? The deposit is treated as forfeit/refunded outside the system.`)) return;
+    try {
+      await cancelAdvanceOrder(adv.id);
+      await fetchData();
+    } catch (err) {
+      console.error("Cancel failed:", err);
+      alert("Could not cancel the advance order.");
+    }
+  };
+
+  const doDeleteAdvance = async (adv: AdvanceOrderWithRelations) => {
+    if (!confirm(`Permanently delete advance order ${adv.id}? This cannot be undone.`)) return;
+    try {
+      await removeAdvanceOrder(adv.id);
+      await fetchData();
+    } catch (err) {
+      console.error("Delete failed:", err);
+      alert("Could not delete the advance order.");
+    }
+  };
+
+  const toggleAdvanceReady = async (adv: AdvanceOrderWithRelations) => {
+    const next: AdvanceOrderStatus = adv.status === "READY" ? "PENDING" : "READY";
+    try {
+      await setAdvanceOrderStatus(adv.id, next);
+      await fetchData();
+    } catch (err) {
+      console.error("Status update failed:", err);
     }
   };
 
@@ -3192,6 +3420,27 @@ export default function POSBilling() {
               </button>
               <button
                 onClick={() => {
+                  setActiveTab("advance");
+                  setCompletedBillData(null);
+                  if (mainScrollRef.current) mainScrollRef.current.scrollTop = 0;
+                  window.scrollTo({ top: 0, behavior: "instant" });
+                }}
+                className={`w-full flex items-center gap-4 px-4 py-3.5 rounded-xl font-bold text-xs uppercase tracking-wider transition-colors cursor-pointer relative ${
+                  activeTab === "advance"
+                    ? "bg-white text-[#27272A] shadow-md"
+                    : "text-white/90 hover:bg-white/20 hover:text-white"
+                }`}
+              >
+                <Clock className="w-5 h-5 shrink-0" />
+                Advance Orders
+                {advanceOrders.filter((a) => a.status === "PENDING" || a.status === "READY").length > 0 && (
+                  <span className="ml-auto min-w-[22px] h-[22px] px-1.5 rounded-full text-[10px] font-black flex items-center justify-center bg-[#F59E0B] text-white">
+                    {advanceOrders.filter((a) => a.status === "PENDING" || a.status === "READY").length}
+                  </span>
+                )}
+              </button>
+              <button
+                onClick={() => {
                   setActiveTab("alerts");
                   setCompletedBillData(null);
                   if (mainScrollRef.current) mainScrollRef.current.scrollTop = 0;
@@ -4289,6 +4538,18 @@ export default function POSBilling() {
                         )}
                       </button>
 
+                      {/* Save as Advance Order — partial payment hold, not counted as revenue */}
+                      <button
+                        onClick={openAdvanceSaveModal}
+                        disabled={isSubmittingOrder}
+                        className={`w-full mt-2 bg-white border-2 border-[#F59E0B] hover:bg-[#FEF3C7] text-[#B45309] py-3 rounded-lg font-black text-[10px] uppercase tracking-[0.1em] flex items-center justify-center gap-2 transition-all active:scale-[0.98] ${
+                          isSubmittingOrder ? "opacity-60 cursor-not-allowed" : "cursor-pointer"
+                        }`}
+                      >
+                        <Clock className="w-4 h-4" />
+                        <span>Save as Advance Order</span>
+                      </button>
+
                       {/* Send Bill Button — completes/saves the sale, then shares it via WhatsApp */}
                       <button
                         onClick={handleCompleteAndSendWhatsApp}
@@ -4323,6 +4584,440 @@ export default function POSBilling() {
               </div>
             </div>
           )}
+
+        {/* ── Save-as-Advance modal (opens from billing) ─────────── */}
+        {showAdvanceSaveModal && (
+          <div className="fixed inset-0 z-[400] flex items-center justify-center p-3 bg-black/60 backdrop-blur-sm animate-in fade-in duration-200">
+            <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md p-5 animate-in zoom-in-95 duration-200">
+              <div className="flex justify-between items-center pb-3 border-b border-black/10">
+                <div>
+                  <h3 className="text-lg font-black text-[#000000] tracking-tight">Save as Advance Order</h3>
+                  <p className="text-[10px] font-bold text-[#B45309] mt-0.5 uppercase tracking-wider">Not counted as revenue until fully paid</p>
+                </div>
+                <button onClick={() => setShowAdvanceSaveModal(false)} className="text-black hover:bg-black/5 w-7 h-7 rounded-lg flex items-center justify-center cursor-pointer">
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              <div className="mt-4 space-y-4">
+                <div className="bg-[#FEF3C7] border border-[#F59E0B]/40 rounded-lg p-3">
+                  <div className="flex justify-between text-[10px] font-bold text-[#78350F] uppercase tracking-wider">
+                    <span>Order Total</span>
+                    <span>₹{grandTotal.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-[10px] font-bold text-[#000000] uppercase tracking-wider mb-1.5">Deposit Amount (₹) *</label>
+                  <input
+                    type="number"
+                    value={advDeposit}
+                    onChange={(e) => setAdvDeposit(e.target.value === "" ? "" : parseFloat(e.target.value))}
+                    onWheel={(e) => e.currentTarget.blur()}
+                    className="w-full bg-white border border-black/15 focus:border-[#F59E0B] rounded-lg px-3 py-2.5 text-sm font-bold text-black focus:outline-none"
+                    placeholder="0.00"
+                    autoFocus
+                  />
+                  {typeof advDeposit === "number" && advDeposit > 0 && (
+                    <p className="mt-1.5 text-[10px] font-bold text-[#52525B]">
+                      Balance due: ₹{Math.max(0, grandTotal - Number(advDeposit)).toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                    </p>
+                  )}
+                </div>
+
+                <div>
+                  <label className="block text-[10px] font-bold text-[#000000] uppercase tracking-wider mb-1.5">Deposit Payment Mode</label>
+                  <div className="grid grid-cols-5 gap-1.5">
+                    {ORDER_PAYMENT_MODES.map((mode) => (
+                      <button
+                        key={mode}
+                        onClick={() => setAdvDepositPaymentMode(mode)}
+                        className={`py-1.5 rounded-lg text-[10px] font-bold uppercase tracking-wider border transition-all cursor-pointer ${
+                          advDepositPaymentMode === mode ? "bg-[#3F3F46] text-white border-[#3F3F46]" : "bg-white text-black border-black/10 hover:border-[#3F3F46]"
+                        }`}
+                      >
+                        {mode}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-[10px] font-bold text-[#000000] uppercase tracking-wider mb-1.5">Expected Delivery Date</label>
+                  <input
+                    type="date"
+                    value={advDeliveryDate}
+                    onChange={(e) => setAdvDeliveryDate(e.target.value)}
+                    className="w-full bg-white border border-black/15 focus:border-[#F59E0B] rounded-lg px-3 py-2 text-sm font-bold text-black focus:outline-none"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-[10px] font-bold text-[#000000] uppercase tracking-wider mb-1.5">Notes (Optional)</label>
+                  <textarea
+                    value={advNotes}
+                    onChange={(e) => setAdvNotes(e.target.value)}
+                    className="w-full bg-white border border-black/15 focus:border-[#F59E0B] rounded-lg px-3 py-2 text-sm text-black focus:outline-none min-h-[60px] resize-none"
+                    placeholder="e.g. Colour preference, follow-up needed..."
+                  />
+                </div>
+
+                <button
+                  onClick={saveAdvanceOrder}
+                  disabled={isSavingAdvance}
+                  className={`w-full py-3 rounded-lg font-black text-[11px] uppercase tracking-[0.1em] flex items-center justify-center gap-2 bg-[#F59E0B] hover:bg-[#D97706] text-white shadow-md transition-all ${
+                    isSavingAdvance ? "opacity-60 cursor-not-allowed" : "cursor-pointer"
+                  }`}
+                >
+                  {isSavingAdvance ? (<><Loader2 className="w-4 h-4 animate-spin" /><span>Saving...</span></>) : (<><Clock className="w-4 h-4" /><span>Confirm Advance Order</span></>)}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ── Advance Order VIEW / RECEIVE-BALANCE dialog ────────── */}
+        {selectedAdvance && advanceViewMode && (
+          <div className="fixed inset-0 z-[400] flex items-center justify-center p-3 bg-black/60 backdrop-blur-sm animate-in fade-in duration-200">
+            <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg p-5 max-h-[92vh] overflow-y-auto animate-in zoom-in-95 duration-200">
+              <div className="flex justify-between items-center pb-3 border-b border-black/10">
+                <div>
+                  <p className="text-[11px] font-mono font-bold text-[#3F3F46]">{selectedAdvance.id}</p>
+                  <h3 className="text-lg font-black text-[#000000] tracking-tight">
+                    {advanceViewMode === "receive" ? "Receive Remaining Payment" : "Advance Order Details"}
+                  </h3>
+                </div>
+                <button onClick={closeAdvanceDialog} className="text-black hover:bg-black/5 w-7 h-7 rounded-lg flex items-center justify-center cursor-pointer">
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              {/* Customer + Items summary (both modes) */}
+              <div className="mt-4 space-y-3">
+                <div className="bg-[#F9FAFB] border border-black/10 rounded-lg p-3">
+                  <p className="text-[10px] font-bold uppercase tracking-wider text-[#52525B]">Customer</p>
+                  <p className="text-sm font-black text-black">{selectedAdvance.customer_name}</p>
+                  <p className="text-[11px] font-bold text-[#52525B]">{selectedAdvance.customer_phone}</p>
+                  {selectedAdvance.customer_address && (
+                    <p className="text-[11px] text-[#52525B] mt-0.5">{selectedAdvance.customer_address}</p>
+                  )}
+                </div>
+
+                <div className="border border-black/10 rounded-lg divide-y divide-black/5">
+                  {selectedAdvance.items.map((it) => (
+                    <div key={it.id} className="flex justify-between items-center p-2.5 text-xs">
+                      <div>
+                        <p className="font-bold text-black">{it.snapshot_name}</p>
+                        <p className="text-[10px] text-[#52525B]">Qty: {it.quantity} × ₹{Number(it.snapshot_price).toLocaleString(undefined, { minimumFractionDigits: 2 })}</p>
+                      </div>
+                      <p className="font-black text-black">₹{(Number(it.snapshot_price) * it.quantity).toLocaleString(undefined, { minimumFractionDigits: 2 })}</p>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="grid grid-cols-3 gap-2 text-center">
+                  <div className="bg-[#F4F4F5] border border-black/10 rounded-lg p-2.5">
+                    <p className="text-[9px] font-bold text-[#52525B] uppercase tracking-wider">Total</p>
+                    <p className="text-sm font-black text-black">₹{Number(selectedAdvance.total_amount).toLocaleString(undefined, { minimumFractionDigits: 2 })}</p>
+                  </div>
+                  <div className="bg-[#DCFCE7] border border-[#16A34A]/30 rounded-lg p-2.5">
+                    <p className="text-[9px] font-bold text-[#166534] uppercase tracking-wider">Paid</p>
+                    <p className="text-sm font-black text-[#166534]">₹{Number(selectedAdvance.deposit_amount).toLocaleString(undefined, { minimumFractionDigits: 2 })}</p>
+                  </div>
+                  <div className="bg-[#FEE2E2] border border-[#DC2626]/30 rounded-lg p-2.5">
+                    <p className="text-[9px] font-bold text-[#991B1B] uppercase tracking-wider">Balance</p>
+                    <p className="text-sm font-black text-[#991B1B]">₹{balanceRemaining(selectedAdvance).toLocaleString(undefined, { minimumFractionDigits: 2 })}</p>
+                  </div>
+                </div>
+
+                {selectedAdvance.delivery_date && (
+                  <p className="text-[11px] font-bold text-[#52525B]"><Calendar className="w-3 h-3 inline mr-1" />Delivery: {new Date(selectedAdvance.delivery_date).toLocaleDateString()}</p>
+                )}
+                {selectedAdvance.notes && (
+                  <div className="bg-[#FEF9C3] border border-[#EAB308]/30 rounded-lg p-2.5 text-[11px] text-[#78350F]">
+                    <span className="font-bold">Notes: </span>{selectedAdvance.notes}
+                  </div>
+                )}
+
+                {/* Receive-payment specific fields */}
+                {advanceViewMode === "receive" && selectedAdvance.status !== "COMPLETED" && selectedAdvance.status !== "CANCELLED" && (
+                  <div className="pt-3 border-t border-black/10 space-y-3">
+                    <div>
+                      <label className="block text-[10px] font-bold text-[#000000] uppercase tracking-wider mb-1.5">Manual Discount</label>
+                      <div className="flex gap-2">
+                        <select
+                          value={receiveDiscountType}
+                          onChange={(e) => setReceiveDiscountType(e.target.value as "FIXED" | "PERCENT")}
+                          className="bg-white border border-black/15 rounded-lg px-2 py-2 text-xs font-bold focus:outline-none"
+                        >
+                          <option value="FIXED">₹</option>
+                          <option value="PERCENT">%</option>
+                        </select>
+                        <input
+                          type="number"
+                          value={receiveDiscountValue}
+                          onChange={(e) => setReceiveDiscountValue(e.target.value === "" ? "" : parseFloat(e.target.value))}
+                          onWheel={(e) => e.currentTarget.blur()}
+                          className="flex-1 bg-white border border-black/15 focus:border-[#3F3F46] rounded-lg px-3 py-2 text-sm font-bold focus:outline-none"
+                          placeholder="0"
+                        />
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="block text-[10px] font-bold text-[#000000] uppercase tracking-wider mb-1.5">Payment Method</label>
+                      <div className="grid grid-cols-5 gap-1.5">
+                        {ORDER_PAYMENT_MODES.map((mode) => (
+                          <button
+                            key={mode}
+                            onClick={() => setReceivePaymentMode(mode)}
+                            className={`py-1.5 rounded-lg text-[10px] font-bold uppercase tracking-wider border transition-all cursor-pointer ${
+                              receivePaymentMode === mode ? "bg-[#3F3F46] text-white border-[#3F3F46]" : "bg-white text-black border-black/10 hover:border-[#3F3F46]"
+                            }`}
+                          >
+                            {mode}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="checkbox"
+                        id="receiveIsGst"
+                        checked={receiveIsGst}
+                        onChange={(e) => setReceiveIsGst(e.target.checked)}
+                        className="w-4 h-4"
+                      />
+                      <label htmlFor="receiveIsGst" className="text-xs font-bold text-black">GST Invoice</label>
+                      {receiveIsGst && (
+                        <input
+                          type="number"
+                          value={receiveGstPct}
+                          onChange={(e) => setReceiveGstPct(parseFloat(e.target.value) || 0)}
+                          onWheel={(e) => e.currentTarget.blur()}
+                          className="w-16 bg-white border border-black/15 rounded px-2 py-1 text-xs font-bold focus:outline-none"
+                        />
+                      )}
+                      {receiveIsGst && <span className="text-xs font-bold">%</span>}
+                    </div>
+
+                    <div className="bg-[#DCFCE7] border border-[#16A34A]/40 rounded-lg p-3 text-center">
+                      <p className="text-[10px] font-bold text-[#166534] uppercase tracking-wider">Final Amount to Collect</p>
+                      <p className="text-2xl font-black text-[#166534]">₹{receiveBalanceFinalAmount.toLocaleString(undefined, { minimumFractionDigits: 2 })}</p>
+                    </div>
+
+                    <p className="text-[10px] font-bold text-[#78350F] bg-[#FEF3C7] border border-[#F59E0B]/30 rounded-lg p-2.5">
+                      Confirmation marks the order Completed, creates one official invoice, and recognizes the full ₹{Number(selectedAdvance.total_amount - receiveBalanceDiscountAmount).toLocaleString(undefined, { minimumFractionDigits: 2 })} as revenue.
+                    </p>
+
+                    <button
+                      onClick={confirmReceiveBalance}
+                      disabled={isFinalizing}
+                      className={`w-full py-3 rounded-lg font-black text-[11px] uppercase tracking-[0.1em] flex items-center justify-center gap-2 bg-[#10B981] hover:bg-[#059669] text-white shadow-md transition-all ${
+                        isFinalizing ? "opacity-60 cursor-not-allowed" : "cursor-pointer"
+                      }`}
+                    >
+                      {isFinalizing ? (<><Loader2 className="w-4 h-4 animate-spin" /><span>Finalizing...</span></>) : (<><Check className="w-4 h-4" /><span>Confirm Final Payment</span></>)}
+                    </button>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ── Advance Orders tab ─────────────────────────────────── */}
+        {activeTab === "advance" && (
+          <div className="flex-1 flex flex-col max-w-[1400px] mx-auto w-full pb-8 pr-2 animate-in fade-in duration-300">
+            {/* Header */}
+            <div className="flex flex-col lg:flex-row justify-between items-start lg:items-center gap-4 mb-6">
+              <div>
+                <h2 className="text-[28px] font-black text-[#000000] tracking-tight">Advance Orders</h2>
+                <p className="text-xs text-[#000000] font-semibold mt-1">Partial-payment holds — revenue is recognized only when the balance is collected.</p>
+              </div>
+            </div>
+
+            {/* Summary cards */}
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-6">
+              {(() => {
+                const pending = advanceOrders.filter((a) => a.status === "PENDING" || a.status === "READY");
+                const outstanding = pending.reduce((acc, a) => acc + balanceRemaining(a), 0);
+                const ready = advanceOrders.filter((a) => a.status === "READY").length;
+                const completed = advanceOrders.filter((a) => a.status === "COMPLETED").length;
+                return (
+                  <>
+                    <div className="bg-white border border-black/10 rounded-xl p-4 shadow-xs flex justify-between items-center">
+                      <div>
+                        <p className="text-[10px] font-bold text-[#52525B] uppercase tracking-wider">Outstanding Balance</p>
+                        <p className="text-xl font-black text-black">₹{outstanding.toLocaleString(undefined, { minimumFractionDigits: 2 })}</p>
+                      </div>
+                      <div className="w-10 h-10 rounded-lg bg-[#FEE2E2] flex items-center justify-center">
+                        <IndianRupee className="w-5 h-5 text-[#DC2626]" />
+                      </div>
+                    </div>
+                    <div className="bg-white border border-black/10 rounded-xl p-4 shadow-xs flex justify-between items-center">
+                      <div>
+                        <p className="text-[10px] font-bold text-[#52525B] uppercase tracking-wider">Ready For Collection</p>
+                        <p className="text-xl font-black text-black">{ready}</p>
+                      </div>
+                      <div className="w-10 h-10 rounded-lg bg-[#DBEAFE] flex items-center justify-center">
+                        <Package className="w-5 h-5 text-[#2563EB]" />
+                      </div>
+                    </div>
+                    <div className="bg-white border border-black/10 rounded-xl p-4 shadow-xs flex justify-between items-center">
+                      <div>
+                        <p className="text-[10px] font-bold text-[#52525B] uppercase tracking-wider">Completed Deposits</p>
+                        <p className="text-xl font-black text-black">{completed}</p>
+                      </div>
+                      <div className="w-10 h-10 rounded-lg bg-[#DCFCE7] flex items-center justify-center">
+                        <Check className="w-5 h-5 text-[#16A34A]" />
+                      </div>
+                    </div>
+                  </>
+                );
+              })()}
+            </div>
+
+            {/* Search + status filter */}
+            <div className="bg-white border border-black/10 rounded-xl p-3 mb-4 flex flex-col md:flex-row gap-3 items-stretch md:items-center">
+              <div className="flex-1 relative">
+                <Search className="w-4 h-4 text-[#52525B] absolute left-3 top-1/2 -translate-y-1/2" />
+                <input
+                  type="text"
+                  value={advSearchQuery}
+                  onChange={(e) => setAdvSearchQuery(e.target.value)}
+                  placeholder="Search by ID, customer, phone, product or status"
+                  className="w-full bg-white border border-black/10 rounded-lg pl-9 pr-3 py-2 text-xs font-semibold focus:outline-none focus:border-[#3F3F46]"
+                />
+              </div>
+              <div className="flex gap-1.5 flex-wrap">
+                {(["ALL", "PENDING", "READY", "COMPLETED", "CANCELLED"] as const).map((s) => (
+                  <button
+                    key={s}
+                    onClick={() => setAdvStatusFilter(s)}
+                    className={`px-3 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-wider transition-all cursor-pointer ${
+                      advStatusFilter === s ? "bg-[#3F3F46] text-white" : "bg-[#F4F4F5] text-black hover:bg-black/10"
+                    }`}
+                  >
+                    {s === "ALL" ? "All" : s.charAt(0) + s.slice(1).toLowerCase()}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Rows */}
+            <div className="bg-white border border-black/10 rounded-xl overflow-hidden">
+              <div className="hidden md:grid grid-cols-[1.1fr_1.3fr_1.5fr_1.5fr_0.9fr_1.1fr_1.4fr] gap-3 px-4 py-3 border-b border-black/10 text-[10px] font-black uppercase tracking-wider text-[#52525B] bg-[#F9FAFB]">
+                <span>Deposit ID</span>
+                <span>Customer</span>
+                <span>Product</span>
+                <span>Total / Paid / Balance</span>
+                <span>Delivery</span>
+                <span>Status</span>
+                <span className="text-right">Actions</span>
+              </div>
+              {(() => {
+                const q = advSearchQuery.trim().toLowerCase();
+                const filtered = advanceOrders.filter((a) => {
+                  if (advStatusFilter !== "ALL" && a.status !== advStatusFilter) return false;
+                  if (!q) return true;
+                  return (
+                    a.id.toLowerCase().includes(q) ||
+                    a.customer_name.toLowerCase().includes(q) ||
+                    a.customer_phone.includes(q) ||
+                    a.status.toLowerCase().includes(q) ||
+                    a.items.some((i) => i.snapshot_name.toLowerCase().includes(q))
+                  );
+                });
+                if (filtered.length === 0) {
+                  return (
+                    <div className="p-8 text-center text-xs font-bold text-[#52525B]">
+                      No advance orders match the current filters.
+                    </div>
+                  );
+                }
+                return filtered.map((a) => {
+                  const bal = balanceRemaining(a);
+                  const statusStyles: Record<AdvanceOrderStatus, string> = {
+                    PENDING: "bg-[#FEF3C7] text-[#78350F] border-[#F59E0B]/30",
+                    READY: "bg-[#DBEAFE] text-[#1E3A8A] border-[#2563EB]/30",
+                    COMPLETED: "bg-[#DCFCE7] text-[#166534] border-[#16A34A]/30",
+                    CANCELLED: "bg-[#FEE2E2] text-[#991B1B] border-[#DC2626]/30",
+                  };
+                  return (
+                    <div key={a.id} className="grid grid-cols-1 md:grid-cols-[1.1fr_1.3fr_1.5fr_1.5fr_0.9fr_1.1fr_1.4fr] gap-3 px-4 py-3 border-b border-black/5 items-center text-xs hover:bg-[#FAFAFA]">
+                      <div>
+                        <p className="font-mono font-black text-[11px] text-black">{a.id}</p>
+                        <p className="text-[9px] font-bold text-[#52525B]">{new Date(a.created_at).toLocaleDateString()}</p>
+                      </div>
+                      <div>
+                        <p className="font-black text-black">{a.customer_name}</p>
+                        <p className="text-[10px] text-[#52525B]">{a.customer_phone}</p>
+                      </div>
+                      <div className="text-[11px]">
+                        {a.items.slice(0, 2).map((i) => (
+                          <p key={i.id} className="font-bold text-black truncate">
+                            {i.quantity}× {i.snapshot_name}
+                          </p>
+                        ))}
+                        {a.items.length > 2 && (
+                          <p className="text-[10px] text-[#52525B]">+{a.items.length - 2} more</p>
+                        )}
+                      </div>
+                      <div className="text-[11px]">
+                        <p className="font-bold text-black">Total: ₹{Number(a.total_amount).toLocaleString(undefined, { minimumFractionDigits: 2 })}</p>
+                        <p className="text-[#16A34A] font-bold">Paid: ₹{Number(a.deposit_amount).toLocaleString(undefined, { minimumFractionDigits: 2 })}</p>
+                        <p className="text-[#DC2626] font-bold">Balance: ₹{bal.toLocaleString(undefined, { minimumFractionDigits: 2 })}</p>
+                      </div>
+                      <div className="text-[11px] font-bold text-[#52525B]">
+                        {a.delivery_date ? new Date(a.delivery_date).toLocaleDateString() : "—"}
+                      </div>
+                      <div>
+                        <span className={`inline-block px-2 py-1 rounded-md text-[9px] font-black uppercase tracking-wider border ${statusStyles[a.status]}`}>
+                          {a.status}
+                        </span>
+                        {a.status !== "COMPLETED" && a.status !== "CANCELLED" && (
+                          <button
+                            onClick={() => toggleAdvanceReady(a)}
+                            className="block mt-1 text-[9px] font-black uppercase tracking-wider text-[#2563EB] hover:underline cursor-pointer"
+                          >
+                            Mark as {a.status === "READY" ? "Pending" : "Ready"}
+                          </button>
+                        )}
+                      </div>
+                      <div className="flex items-center justify-end gap-1.5 flex-nowrap">
+                        <button onClick={() => openAdvanceView(a)} title="View details" className="w-8 h-8 shrink-0 rounded-lg bg-[#F4F4F5] hover:bg-[#E4E4E7] text-black flex items-center justify-center cursor-pointer">
+                          <Eye className="w-4 h-4" />
+                        </button>
+                        {a.status !== "COMPLETED" && a.status !== "CANCELLED" && (
+                          <button onClick={() => openReceiveBalance(a)} title="Receive balance" className="w-8 h-8 shrink-0 rounded-lg bg-[#10B981] hover:bg-[#059669] text-white flex items-center justify-center cursor-pointer">
+                            <IndianRupee className="w-4 h-4" />
+                          </button>
+                        )}
+                        {a.status === "COMPLETED" && a.finalized_order_id && (
+                          <button onClick={() => setActiveInvoiceId(a.finalized_order_id)} title="Open invoice" className="w-8 h-8 shrink-0 rounded-lg bg-[#DBEAFE] hover:bg-[#BFDBFE] text-[#1E3A8A] flex items-center justify-center cursor-pointer">
+                            <Receipt className="w-4 h-4" />
+                          </button>
+                        )}
+                        {a.status !== "COMPLETED" && a.status !== "CANCELLED" && (
+                          <button onClick={() => doCancelAdvance(a)} title="Cancel" className="w-8 h-8 shrink-0 rounded-lg bg-[#FEE2E2] hover:bg-[#FECACA] text-[#991B1B] flex items-center justify-center cursor-pointer">
+                            <X className="w-4 h-4" />
+                          </button>
+                        )}
+                        {role === "admin" && (
+                          <button onClick={() => doDeleteAdvance(a)} title="Delete" className="w-8 h-8 shrink-0 rounded-lg bg-[#F4F4F5] hover:bg-[#E4E4E7] text-[#991B1B] flex items-center justify-center cursor-pointer">
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  );
+                });
+              })()}
+            </div>
+          </div>
+        )}
 
         {activeTab === "orders" && (
           <div className="flex-1 flex flex-col max-w-[1400px] mx-auto w-full pb-8 pr-2 animate-in fade-in duration-300">

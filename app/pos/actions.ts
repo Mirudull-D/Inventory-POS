@@ -1,7 +1,7 @@
 "use server";
 
 import { dbStore } from "@/lib/dbStore";
-import { Product, ProductBatch, ProductWithBatches, ProductUnit, OrderWithRelations, CartItem, Expense, PaymentMode, Category } from "@/lib/types";
+import { Product, ProductBatch, ProductWithBatches, ProductUnit, OrderWithRelations, CartItem, Expense, PaymentMode, Category, AdvanceOrderWithRelations, AdvanceOrderStatus } from "@/lib/types";
 
 // Helper to serialize Date objects from Postgres to strings
 function serialize<T>(data: T): T {
@@ -152,4 +152,66 @@ export async function editExpense(id: string, data: Partial<Expense>): Promise<E
 
 export async function removeExpense(id: string): Promise<void> {
   return await dbStore.deleteExpense(id);
+}
+
+// Advance Orders (partial-payment holds — not revenue until finalized)
+export async function fetchAdvanceOrders(): Promise<AdvanceOrderWithRelations[]> {
+  return serialize(await dbStore.listAdvanceOrders());
+}
+
+export async function fetchAdvanceOrderById(id: string): Promise<AdvanceOrderWithRelations | null> {
+  return serialize(await dbStore.getAdvanceOrder(id));
+}
+
+export async function advanceOrderIdExists(id: string): Promise<boolean> {
+  return await dbStore.advanceOrderIdExists(id);
+}
+
+export async function createAdvanceOrder(payload: {
+  advanceOrderId: string;
+  customerName: string;
+  customerPhone: string;
+  customerAddress?: string | null;
+  subtotal: number;
+  totalAmount: number;
+  depositAmount: number;
+  depositPaymentMode: PaymentMode;
+  deliveryDate: string | null;
+  notes: string | null;
+  items: {
+    product_id: string | null;
+    snapshot_name: string;
+    snapshot_desc: string | null;
+    snapshot_price: number;
+    quantity: number;
+  }[];
+}): Promise<{ advanceOrderId: string }> {
+  return await dbStore.createAdvanceOrder(payload);
+}
+
+export async function setAdvanceOrderStatus(id: string, status: AdvanceOrderStatus): Promise<void> {
+  return await dbStore.updateAdvanceOrderStatus(id, status);
+}
+
+export async function cancelAdvanceOrder(id: string): Promise<void> {
+  return await dbStore.cancelAdvanceOrder(id);
+}
+
+export async function removeAdvanceOrder(id: string): Promise<void> {
+  return await dbStore.deleteAdvanceOrder(id);
+}
+
+export async function finalizeAdvanceOrder(payload: {
+  advanceOrderId: string;
+  invoiceId: string;
+  isGst: boolean;
+  gstPercentage: number;
+  discountType: 'PERCENT' | 'FIXED';
+  discountValue: number;
+  discountAmount: number;
+  deliveryFee: number;
+  paymentMode: PaymentMode;
+  billDate: string;
+}): Promise<{ orderId: string }> {
+  return await dbStore.finalizeAdvanceOrder(payload);
 }

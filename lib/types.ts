@@ -107,6 +107,41 @@ export type Expense = {
   created_at: string;
 };
 
+export type AdvanceOrderStatus = 'PENDING' | 'READY' | 'COMPLETED' | 'CANCELLED';
+
+export type AdvanceOrderRow = {
+  id: string;
+  customer_id: string;
+  status: AdvanceOrderStatus;
+  subtotal: number;
+  total_amount: number;
+  deposit_amount: number;
+  deposit_payment_mode: PaymentMode;
+  delivery_date: string | null;
+  notes: string | null;
+  finalized_order_id: string | null;
+  finalized_at: string | null;
+  cancelled_at: string | null;
+  created_at: string;
+};
+
+export type AdvanceOrderItemRow = {
+  id: string;
+  advance_order_id: string;
+  product_id: string | null;
+  snapshot_name: string;
+  snapshot_desc: string | null;
+  snapshot_price: number;
+  quantity: number;
+};
+
+export type AdvanceOrderWithRelations = AdvanceOrderRow & {
+  customer_name: string;
+  customer_phone: string;
+  customer_address: string | null;
+  items: AdvanceOrderItemRow[];
+};
+
 export type CartItem = {
   id: string;
   product_id: string | null;

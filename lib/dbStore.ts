@@ -12,6 +12,10 @@ import {
   CartItem,
   Expense,
   PaymentMode,
+  AdvanceOrderRow,
+  AdvanceOrderItemRow,
+  AdvanceOrderStatus,
+  AdvanceOrderWithRelations,
 } from './types';
 
 // Utility to generate a unique ID
@@ -558,5 +562,182 @@ export const dbStore = {
     ]);
 
     return { orderId: payload.orderId };
-  }
+  },
+
+  // ADVANCE ORDERS — partial-payment holds. Stock is NOT deducted here; that
+  // happens only when the balance is collected and finalizeAdvanceOrder runs.
+  async listAdvanceOrders(): Promise<AdvanceOrderWithRelations[]> {
+    const rows = await sql`
+      SELECT a.*, c.name AS customer_name, c.phone AS customer_phone, c.address AS customer_address
+      FROM advance_orders a
+      JOIN customers c ON c.id = a.customer_id
+      ORDER BY a.created_at DESC
+    `;
+    if (rows.length === 0) return [];
+
+    const ids = rows.map((r: any) => r.id);
+    const items = await sql`
+      SELECT * FROM advance_order_items WHERE advance_order_id = ANY(${ids})
+    `;
+
+    return rows.map((r: any) => ({
+      ...r,
+      items: (items as AdvanceOrderItemRow[]).filter((i) => i.advance_order_id === r.id),
+    })) as AdvanceOrderWithRelations[];
+  },
+
+  async getAdvanceOrder(id: string): Promise<AdvanceOrderWithRelations | null> {
+    const rows = await sql`
+      SELECT a.*, c.name AS customer_name, c.phone AS customer_phone, c.address AS customer_address
+      FROM advance_orders a
+      JOIN customers c ON c.id = a.customer_id
+      WHERE a.id = ${id}
+    `;
+    if (rows.length === 0) return null;
+    const items = await sql`SELECT * FROM advance_order_items WHERE advance_order_id = ${id}`;
+    return { ...(rows[0] as any), items: items as AdvanceOrderItemRow[] } as AdvanceOrderWithRelations;
+  },
+
+  async advanceOrderIdExists(id: string): Promise<boolean> {
+    const rows = await sql`SELECT 1 FROM advance_orders WHERE id = ${id} LIMIT 1`;
+    return rows.length > 0;
+  },
+
+  async createAdvanceOrder(payload: {
+    advanceOrderId: string;
+    customerName: string;
+    customerPhone: string;
+    customerAddress?: string | null;
+    subtotal: number;
+    totalAmount: number;
+    depositAmount: number;
+    depositPaymentMode: PaymentMode;
+    deliveryDate: string | null;
+    notes: string | null;
+    items: {
+      product_id: string | null;
+      snapshot_name: string;
+      snapshot_desc: string | null;
+      snapshot_price: number;
+      quantity: number;
+    }[];
+  }): Promise<{ advanceOrderId: string }> {
+    const customer = await this.upsertCustomer(
+      payload.customerName,
+      payload.customerPhone,
+      payload.customerAddress,
+    );
+
+    await sql`
+      INSERT INTO advance_orders (
+        id, customer_id, status, subtotal, total_amount, deposit_amount,
+        deposit_payment_mode, delivery_date, notes
+      ) VALUES (
+        ${payload.advanceOrderId}, ${customer.id}, 'PENDING',
+        ${payload.subtotal}, ${payload.totalAmount}, ${payload.depositAmount},
+        ${payload.depositPaymentMode}, ${payload.deliveryDate}, ${payload.notes}
+      )
+    `;
+
+    await Promise.all(
+      payload.items.map((it) =>
+        sql`
+          INSERT INTO advance_order_items (
+            id, advance_order_id, product_id, snapshot_name, snapshot_desc, snapshot_price, quantity
+          ) VALUES (
+            ${uid()}, ${payload.advanceOrderId}, ${it.product_id},
+            ${it.snapshot_name}, ${it.snapshot_desc}, ${it.snapshot_price}, ${it.quantity}
+          )
+        `,
+      ),
+    );
+
+    return { advanceOrderId: payload.advanceOrderId };
+  },
+
+  async updateAdvanceOrderStatus(id: string, status: AdvanceOrderStatus): Promise<void> {
+    await sql`UPDATE advance_orders SET status = ${status} WHERE id = ${id}`;
+  },
+
+  async cancelAdvanceOrder(id: string): Promise<void> {
+    await sql`
+      UPDATE advance_orders
+      SET status = 'CANCELLED', cancelled_at = now()
+      WHERE id = ${id}
+    `;
+  },
+
+  async deleteAdvanceOrder(id: string): Promise<void> {
+    await sql`DELETE FROM advance_orders WHERE id = ${id}`;
+  },
+
+  // Collect the remaining balance and turn the hold into a real invoice.
+  // Reuses submitOrder for FIFO stock deduction and revenue recognition.
+  async finalizeAdvanceOrder(payload: {
+    advanceOrderId: string;
+    invoiceId: string;
+    isGst: boolean;
+    gstPercentage: number;
+    discountType: 'PERCENT' | 'FIXED';
+    discountValue: number;
+    discountAmount: number;
+    deliveryFee: number;
+    paymentMode: PaymentMode;
+    billDate: string;
+  }): Promise<{ orderId: string }> {
+    const advance = await this.getAdvanceOrder(payload.advanceOrderId);
+    if (!advance) throw new Error('Advance order not found');
+    if (advance.status === 'COMPLETED') throw new Error('Advance order already finalized');
+    if (advance.status === 'CANCELLED') throw new Error('Advance order was cancelled');
+
+    // Rebuild cart from the stored snapshot items.
+    const cart: CartItem[] = advance.items.map((it) => ({
+      id: it.id,
+      product_id: it.product_id,
+      batch_id: null,
+      unit_id: null,
+      serial: null,
+      name: it.snapshot_name,
+      desc: it.snapshot_desc || '',
+      price: Number(it.snapshot_price),
+      qty: it.quantity,
+    }));
+
+    // Grand total math mirrors POSBilling.completeSale (GST-inclusive subtotal).
+    const rawSubtotal = cart.reduce((acc, i) => acc + i.price * i.qty, 0);
+    const netInclusive = Math.max(0, rawSubtotal - payload.discountAmount);
+    const gstAmount =
+      payload.isGst && payload.gstPercentage > 0
+        ? netInclusive - netInclusive / (1 + payload.gstPercentage / 100)
+        : 0;
+    const grandTotal = netInclusive + payload.deliveryFee;
+
+    const { orderId } = await this.submitOrder({
+      orderId: payload.invoiceId,
+      customerName: advance.customer_name,
+      customerPhone: advance.customer_phone,
+      customerAddress: advance.customer_address,
+      source: 'OFFLINE',
+      isGst: payload.isGst,
+      billDate: payload.billDate,
+      items: cart,
+      discountType: payload.discountType,
+      discountValue: payload.discountValue,
+      discountAmount: payload.discountAmount,
+      gstPercentage: payload.isGst ? payload.gstPercentage : 0,
+      gstAmount,
+      deliveryFee: payload.deliveryFee,
+      grandTotal,
+      cashReceived: grandTotal,
+      paymentMode: payload.paymentMode,
+    });
+
+    await sql`
+      UPDATE advance_orders
+      SET status = 'COMPLETED', finalized_order_id = ${orderId}, finalized_at = now()
+      WHERE id = ${payload.advanceOrderId}
+    `;
+
+    return { orderId };
+  },
 };
