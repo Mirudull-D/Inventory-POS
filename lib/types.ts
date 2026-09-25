@@ -86,6 +86,7 @@ export type OrderItemRow = {
   snapshot_name: string;
   snapshot_price: number;
   snapshot_serial: string | null; // IMEI / serial sold, frozen at time of sale
+  snapshot_hsn: string | null; // HSN / SAC of the sold batch, frozen at time of sale
   quantity: number;
 };
 

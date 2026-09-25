@@ -295,7 +295,6 @@ export default async function InvoicePage({
               <tr className="border-b border-zinc-200 text-[10px] font-bold text-zinc-400 uppercase tracking-wider">
                 <th className="pb-3 w-8 text-center">#</th>
                 <th className="pb-3">Item Description</th>
-                {order.is_gst && <th className="pb-3 text-center w-16">HSN</th>}
                 <th className="pb-3 text-center w-12">Qty</th>
                 <th className="pb-3 text-right w-24">
                   Rate (₹){order.is_gst && <span className="block text-[8px] font-normal normal-case tracking-normal text-zinc-400">incl. GST</span>}
@@ -324,11 +323,6 @@ export default async function InvoicePage({
                         </div>
                       )}
                     </td>
-                    {order.is_gst && (
-                      <td className="py-3 text-center font-mono text-zinc-500">
-                        8517
-                      </td>
-                    )}
                     <td className="py-3 text-center text-zinc-800 font-medium">
                       {item.quantity}
                     </td>
