@@ -439,9 +439,6 @@ export const dbStore = {
 
     // FIFO Stock Deduction and split items in memory
     const batchList = [...(allBatches as ProductBatch[])];
-    const batchById = new Map(batchList.map((b) => [b.id, b]));
-    const hsnOf = (batchId: string | null | undefined) =>
-      (batchId ? batchById.get(batchId)?.hsn_code : null) ?? null;
     const finalOrderItems: Omit<OrderItemRow, 'id'>[] = [];
     const batchUpdates: { id: string; deduction: number }[] = [];
     const unitsToSell: string[] = []; // product_units ids to mark SOLD
@@ -459,7 +456,6 @@ export const dbStore = {
           snapshot_name: item.name,
           snapshot_price: item.price,
           snapshot_serial: item.serial ?? null,
-          snapshot_hsn: hsnOf(item.batch_id),
           quantity: 1,
         });
         continue;
@@ -474,7 +470,6 @@ export const dbStore = {
           snapshot_name: item.name,
           snapshot_price: item.price,
           snapshot_serial: null,
-          snapshot_hsn: null,
           quantity: item.qty,
         });
         continue;
@@ -499,7 +494,6 @@ export const dbStore = {
           snapshot_name: item.name,
           snapshot_price: Number(batch.selling_price),
           snapshot_serial: null,
-          snapshot_hsn: batch.hsn_code ?? null,
           quantity: take,
         });
 
@@ -515,7 +509,6 @@ export const dbStore = {
           snapshot_name: item.name,
           snapshot_price: item.price,
           snapshot_serial: null,
-          snapshot_hsn: null,
           quantity: remaining,
         });
       }
@@ -552,10 +545,10 @@ export const dbStore = {
       ...finalOrderItems.map((oi) =>
         sql`
           INSERT INTO order_items (
-            id, order_id, product_id, batch_id, unit_id, snapshot_name, snapshot_price, snapshot_serial, snapshot_hsn, quantity
+            id, order_id, product_id, batch_id, unit_id, snapshot_name, snapshot_price, snapshot_serial, quantity
           ) VALUES (
             ${uid()}, ${oi.order_id}, ${oi.product_id}, ${oi.batch_id}, ${oi.unit_id},
-            ${oi.snapshot_name}, ${oi.snapshot_price}, ${oi.snapshot_serial}, ${oi.snapshot_hsn}, ${oi.quantity}
+            ${oi.snapshot_name}, ${oi.snapshot_price}, ${oi.snapshot_serial}, ${oi.quantity}
           )
         `
       ),
