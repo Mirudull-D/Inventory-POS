@@ -215,11 +215,9 @@ export default async function InvoicePage({
               <div className="text-xs text-zinc-600 pt-1 space-y-0.5">
                 <p>Phone: +91 97870 14303, +91 70101 41698</p>
                 <p>Email: rajamobilestvm@gmail.com</p>
-                {order.is_gst && (
-                  <p className="text-zinc-800 font-medium pt-0.5">
-                    GSTIN: <span className="font-mono">33AEEPI4975G1ZI</span> • State Code: 33
-                  </p>
-                )}
+                <p className="text-zinc-800 font-medium pt-0.5">
+                  GSTIN: <span className="font-mono">33AEEPI4975G1ZI</span>
+                </p>
               </div>
             </div>
           </div>
