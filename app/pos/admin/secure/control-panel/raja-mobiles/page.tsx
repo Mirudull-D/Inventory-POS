@@ -99,7 +99,7 @@ const EXPENSE_PAYMENT_MODES = ["CASH", "UPI", "CARD", "BANK", "OTHER"] as const;
 
 // Payment / financing options available at the point of sale.
 // Kept in sync with the CHECK constraint on orders.payment_mode in schema.sql.
-const ORDER_PAYMENT_MODES = ["CASH", "TVS", "BAJAJ", "HDP", "DMI"] as const;
+const ORDER_PAYMENT_MODES = ["CASH", "TVS", "BAJAJ", "HDP", "DMI", "GPAY"] as const;
 type OrderPaymentMode = (typeof ORDER_PAYMENT_MODES)[number];
 
 // Shared date-window test reused by the Expenses tab and the analytics dashboard.
@@ -193,6 +193,7 @@ type CompletedOrder = {
   date: string;
   createdAt: string;
   status: "Completed" | "Pending";
+  gifts?: { name: string; price: number }[];
 };
 
 const SearchableItemInput = ({
@@ -464,6 +465,8 @@ export default function POSBilling() {
 
   const [catalog, setCatalog] = useState<CatalogItem[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
+  // Free gifts for the CURRENT bill only (cleared after each sale). Never counted in totals/analytics.
+  const [freeGifts, setFreeGifts] = useState<{ name: string; price: number }[]>([]);
   const [isRefreshing, setIsRefreshing] = useState(false);
 
   // Modal States
@@ -1606,6 +1609,9 @@ export default function POSBilling() {
         grandTotal: localGrandTotal,
         cashReceived: cashReceived,
         paymentMode: paymentMode,
+        gifts: freeGifts
+          .filter((g) => g.name.trim())
+          .map((g) => ({ gift_id: null, name: g.name.trim(), price: Number(g.price) || 0, quantity: 1 })),
       });
 
       // Construct mappedOrder directly in memory to respond with ZERO blocking delay
@@ -1636,6 +1642,7 @@ export default function POSBilling() {
         date: orderTimestamp,
         createdAt: new Date().toISOString(),
         status: "Completed",
+        gifts: freeGifts.filter((g) => g.name.trim()),
       };
 
       // Instantly update orders history and open the completed receipt banner
@@ -1674,6 +1681,7 @@ export default function POSBilling() {
       setDeliveryFee(0);
       setCashReceived(0);
       setPaymentMode("CASH");
+      setFreeGifts([]);
       setApplyGST(false);
       setGstPercentage(18);
 
@@ -3727,6 +3735,12 @@ export default function POSBilling() {
                       </span>
                     </div>
                   ))}
+                  {(completedBillData.gifts ?? []).map((g, gi) => (
+                    <div key={`g-${gi}`} className="flex justify-between items-center text-xs py-1">
+                      <span className="font-semibold text-black">{g.name} <span className="text-emerald-700 font-bold text-[10px] ml-1">FREE GIFT</span></span>
+                      <span className="font-bold text-emerald-700">FREE</span>
+                    </div>
+                  ))}
                 </div>
               </div>
             </div>
@@ -4444,7 +4458,7 @@ export default function POSBilling() {
                         <span className="block text-[9px] font-bold text-[#000000] uppercase tracking-wider">
                           Financial Option
                         </span>
-                        <div className="grid grid-cols-5 gap-1.5">
+                        <div className="grid grid-cols-3 gap-1.5">
                           {ORDER_PAYMENT_MODES.map((mode) => (
                             <button
                               key={mode}
@@ -4460,6 +4474,55 @@ export default function POSBilling() {
                             </button>
                           ))}
                         </div>
+                      </div>
+
+                      {/* Free Gift — this bill only; price is NOT part of totals or analytics */}
+                      <div className="pt-2 space-y-1.5">
+                        <div className="flex items-center justify-between">
+                          <span className="block text-[9px] font-bold text-[#000000] uppercase tracking-wider">
+                            Free Gift (not billed)
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => setFreeGifts((prev) => [...prev, { name: "", price: 0 }])}
+                            className="text-[10px] font-bold uppercase text-[#3F3F46] cursor-pointer hover:underline"
+                          >
+                            + Add
+                          </button>
+                        </div>
+                        {freeGifts.map((g, gi) => (
+                          <div key={gi} className="flex gap-1.5">
+                            <input
+                              type="text"
+                              value={g.name}
+                              onChange={(e) =>
+                                setFreeGifts((prev) => prev.map((x, i) => (i === gi ? { ...x, name: e.target.value } : x)))
+                              }
+                              placeholder="Gift name"
+                              className="flex-1 min-w-0 px-2 py-1.5 rounded-lg border border-black/10 text-[11px] bg-white"
+                            />
+                            <input
+                              type="number"
+                              min={0}
+                              value={g.price || ""}
+                              onChange={(e) =>
+                                setFreeGifts((prev) =>
+                                  prev.map((x, i) => (i === gi ? { ...x, price: parseFloat(e.target.value) || 0 } : x)),
+                                )
+                              }
+                              placeholder="Price"
+                              className="w-20 px-2 py-1.5 rounded-lg border border-black/10 text-[11px] bg-white"
+                            />
+                            <button
+                              type="button"
+                              title="Remove gift"
+                              onClick={() => setFreeGifts((prev) => prev.filter((_, i) => i !== gi))}
+                              className="px-2 text-sm font-bold text-[#DC2626] cursor-pointer"
+                            >
+                              ×
+                            </button>
+                          </div>
+                        ))}
                       </div>
 
                       {/* Grand Total */}
@@ -4478,7 +4541,7 @@ export default function POSBilling() {
                       {/* Cash / Finance Amount Received */}
                       <div className="bg-[#FFFFFF]/40 border border-black/10 rounded-xl p-4 mt-2">
                         <span className="block text-[9px] font-bold text-[#000000] uppercase tracking-wider mb-0.5">
-                          {paymentMode === "CASH" ? "Cash Payment" : `${paymentMode} Finance`}
+                          {paymentMode === "CASH" ? "Cash Payment" : paymentMode === "GPAY" ? "GPay Payment" : `${paymentMode} Finance`}
                         </span>
                         <label className="block text-[10px] font-bold text-[#000000] mb-2.5">
                           Amount Received (₹)
@@ -4627,7 +4690,7 @@ export default function POSBilling() {
 
                 <div>
                   <label className="block text-[10px] font-bold text-[#000000] uppercase tracking-wider mb-1.5">Deposit Payment Mode</label>
-                  <div className="grid grid-cols-5 gap-1.5">
+                  <div className="grid grid-cols-3 gap-1.5">
                     {ORDER_PAYMENT_MODES.map((mode) => (
                       <button
                         key={mode}
@@ -4766,7 +4829,7 @@ export default function POSBilling() {
 
                     <div>
                       <label className="block text-[10px] font-bold text-[#000000] uppercase tracking-wider mb-1.5">Payment Method</label>
-                      <div className="grid grid-cols-5 gap-1.5">
+                      <div className="grid grid-cols-3 gap-1.5">
                         {ORDER_PAYMENT_MODES.map((mode) => (
                           <button
                             key={mode}

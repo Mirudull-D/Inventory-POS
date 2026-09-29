@@ -1,7 +1,7 @@
 "use server";
 
 import { dbStore } from "@/lib/dbStore";
-import { Product, ProductBatch, ProductWithBatches, ProductUnit, OrderWithRelations, CartItem, Expense, PaymentMode, Category, AdvanceOrderWithRelations, AdvanceOrderStatus } from "@/lib/types";
+import { Product, ProductBatch, ProductWithBatches, ProductUnit, OrderWithRelations, CartItem, Expense, PaymentMode, Category, Gift, AdvanceOrderWithRelations, AdvanceOrderStatus } from "@/lib/types";
 
 // Helper to serialize Date objects from Postgres to strings
 function serialize<T>(data: T): T {
@@ -122,8 +122,26 @@ export async function submitOrder(payload: {
   grandTotal: number;
   cashReceived: number;
   paymentMode: PaymentMode;
+  gifts?: { gift_id: string | null; name: string; price: number; quantity: number }[];
 }): Promise<{ orderId: string }> {
   return await dbStore.submitOrder(payload);
+}
+
+// Gifts (free add-ons; excluded from all analytics)
+export async function fetchGifts(): Promise<Gift[]> {
+  return serialize(await dbStore.listGifts());
+}
+
+export async function createGift(name: string, price: number): Promise<Gift> {
+  return serialize(await dbStore.addGift(name.trim(), price));
+}
+
+export async function editGift(id: string, name: string, price: number): Promise<Gift | null> {
+  return serialize(await dbStore.updateGift(id, name.trim(), price));
+}
+
+export async function removeGift(id: string): Promise<void> {
+  return await dbStore.deleteGift(id);
 }
 
 export async function removeOrder(id: string): Promise<void> {

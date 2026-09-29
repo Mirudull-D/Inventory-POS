@@ -213,7 +213,7 @@ export default async function InvoicePage({
                 CC Road, Naidumangalam, Tiruvannamalai, Tamil Nadu - 606802
               </p>
               <div className="text-xs text-zinc-600 pt-1 space-y-0.5">
-                <p>Phone: +91 97870 14340, +91 70101 41698</p>
+                <p>Phone: +91 97870 14303, +91 70101 41698</p>
                 <p>Email: rajamobilestvm@gmail.com</p>
                 {order.is_gst && (
                   <p className="text-zinc-800 font-medium pt-0.5">
@@ -341,6 +341,34 @@ export default async function InvoicePage({
                   </tr>
                 );
               })}
+              {/* Free gifts — shown for the customer, never included in totals */}
+              {(order.gifts ?? []).map((gift, gi: number) => (
+                <tr key={`gift-${gift.id}`} className="bg-zinc-50/60">
+                  <td className="py-3 text-center text-zinc-400 font-mono">
+                    {order.items.length + gi + 1}
+                  </td>
+                  <td className="py-3">
+                    <div className="font-medium text-zinc-900">
+                      {gift.snapshot_name}{" "}
+                      <span className="text-[10px] font-bold text-emerald-700 uppercase tracking-wider">
+                        (Free Gift)
+                      </span>
+                    </div>
+                  </td>
+                  <td className="py-3 text-center text-zinc-800 font-medium">
+                    {gift.quantity}
+                  </td>
+                  <td className="py-3 text-right font-mono text-zinc-400 line-through">
+                    {(Number(gift.snapshot_price) || 0).toLocaleString("en-IN", {
+                      minimumFractionDigits: 2,
+                      maximumFractionDigits: 2,
+                    })}
+                  </td>
+                  <td className="py-3 text-right font-mono font-bold text-emerald-700">
+                    FREE
+                  </td>
+                </tr>
+              ))}
             </tbody>
           </table>
         </div>
@@ -460,6 +488,12 @@ export default async function InvoicePage({
           </div>
 
           <div className="sm:text-right space-y-1 self-end">
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src="/seal.png"
+              alt="Raja Mobiles seal"
+              className="h-16 w-auto mb-1 ml-auto mix-blend-multiply"
+            />
             <div className="border-b border-zinc-300 w-36 mb-1 ml-auto"></div>
             <div className="font-semibold text-zinc-800 text-xs">
               Authorised Signatory

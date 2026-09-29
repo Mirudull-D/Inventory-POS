@@ -55,7 +55,7 @@ export type Customer = {
   created_at: string;
 };
 
-export type PaymentMode = 'CASH' | 'TVS' | 'BAJAJ' | 'HDP' | 'DMI';
+export type PaymentMode = 'CASH' | 'TVS' | 'BAJAJ' | 'HDP' | 'DMI' | 'GPAY';
 
 export type OrderRow = {
   id: string;
@@ -89,11 +89,30 @@ export type OrderItemRow = {
   quantity: number;
 };
 
+// Free add-on given with a bill. Price is informational only — never part of
+// order totals, GST, revenue or analytics.
+export type Gift = {
+  id: string;
+  name: string;
+  price: number;
+  created_at: string;
+};
+
+export type OrderGiftRow = {
+  id: string;
+  order_id: string;
+  gift_id: string | null;
+  snapshot_name: string;
+  snapshot_price: number;
+  quantity: number;
+};
+
 export type OrderWithRelations = OrderRow & {
   customer_name: string;
   customer_phone: string;
   customer_address: string | null;
   items: OrderItemRow[];
+  gifts?: OrderGiftRow[];
 };
 
 export type Expense = {

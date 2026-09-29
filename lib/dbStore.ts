@@ -9,6 +9,8 @@ import {
   OrderRow,
   OrderItemRow,
   OrderWithRelations,
+  OrderGiftRow,
+  Gift,
   CartItem,
   Expense,
   PaymentMode,
@@ -78,6 +80,31 @@ export const dbStore = {
 
   async deleteCategory(id: string): Promise<void> {
     await sql`DELETE FROM categories WHERE id = ${id}`;
+  },
+
+  // GIFTS (free add-ons; price is display-only, never in analytics)
+  async listGifts(): Promise<Gift[]> {
+    const rows = await sql`SELECT * FROM gifts ORDER BY name ASC`;
+    return rows as Gift[];
+  },
+
+  async addGift(name: string, price: number): Promise<Gift> {
+    const rows = await sql`
+      INSERT INTO gifts (id, name, price) VALUES (${uid()}, ${name}, ${price})
+      RETURNING *
+    `;
+    return rows[0] as Gift;
+  },
+
+  async updateGift(id: string, name: string, price: number): Promise<Gift | null> {
+    const rows = await sql`
+      UPDATE gifts SET name = ${name}, price = ${price} WHERE id = ${id} RETURNING *
+    `;
+    return rows.length > 0 ? (rows[0] as Gift) : null;
+  },
+
+  async deleteGift(id: string): Promise<void> {
+    await sql`DELETE FROM gifts WHERE id = ${id}`;
   },
 
   // PRODUCTS
@@ -296,14 +323,15 @@ export const dbStore = {
     if (orders.length === 0) return [];
 
     const orderIds = orders.map((o: any) => o.id);
-    const items = await sql`
-      SELECT * FROM order_items
-      WHERE order_id = ANY(${orderIds})
-    `;
+    const [items, gifts] = await Promise.all([
+      sql`SELECT * FROM order_items WHERE order_id = ANY(${orderIds})`,
+      sql`SELECT * FROM order_gifts WHERE order_id = ANY(${orderIds})`,
+    ]);
 
     return orders.map((o: any) => ({
       ...o,
       items: items.filter((i: any) => i.order_id === o.id) as OrderItemRow[],
+      gifts: gifts.filter((g: any) => g.order_id === o.id) as OrderGiftRow[],
     })) as OrderWithRelations[];
   },
 
@@ -316,11 +344,15 @@ export const dbStore = {
     `;
     if (orders.length === 0) return null;
 
-    const items = await sql`SELECT * FROM order_items WHERE order_id = ${id}`;
+    const [items, gifts] = await Promise.all([
+      sql`SELECT * FROM order_items WHERE order_id = ${id}`,
+      sql`SELECT * FROM order_gifts WHERE order_id = ${id}`,
+    ]);
 
     return {
       ...(orders[0] as any),
       items: items as OrderItemRow[],
+      gifts: gifts as OrderGiftRow[],
     } as OrderWithRelations;
   },
 
@@ -411,6 +443,7 @@ export const dbStore = {
     grandTotal: number;
     cashReceived: number;
     paymentMode: PaymentMode;
+    gifts?: { gift_id: string | null; name: string; price: number; quantity: number }[];
   }): Promise<{ orderId: string }> {
     // Neon HTTP doesn't natively support full interactive transactions in the simple API,
     // but we can execute them sequentially or use multiple statements.
@@ -557,6 +590,13 @@ export const dbStore = {
           UPDATE product_units
           SET status = 'SOLD', order_id = ${payload.orderId}, sold_at = now()
           WHERE id = ${unitId} AND status = 'AVAILABLE'
+        `
+      ),
+      // Gifts are free add-ons: stored for the invoice only, outside all totals.
+      ...(payload.gifts ?? []).map((g) =>
+        sql`
+          INSERT INTO order_gifts (id, order_id, gift_id, snapshot_name, snapshot_price, quantity)
+          VALUES (${uid()}, ${payload.orderId}, ${g.gift_id}, ${g.name}, ${g.price}, ${g.quantity})
         `
       ),
     ]);

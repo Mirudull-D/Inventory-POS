@@ -72,7 +72,7 @@ export default function Home() {
               <div>
                 <p className="text-[10px] font-bold text-black/50 uppercase tracking-wider mb-0.5">Phone Numbers</p>
                 <p className="text-[#1A1A1A]">
-                  97870143403 / 7010141698
+                  9787014303 / 7010141698
                 </p>
               </div>
             </div>
