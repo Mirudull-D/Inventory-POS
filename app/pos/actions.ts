@@ -43,7 +43,7 @@ export async function fetchProducts(): Promise<ProductWithBatches[]> {
   return serialize(await dbStore.listProductsWithBatches());
 }
 
-export async function createProduct(data: { name: string; description: string | null; category: string; gst_rate: number; low_stock_threshold: number; tracks_serial?: boolean }): Promise<Product> {
+export async function createProduct(data: { name: string; description: string | null; description2?: string | null; category: string; gst_rate: number; low_stock_threshold: number; tracks_serial?: boolean }): Promise<Product> {
   return serialize(await dbStore.addProduct(data));
 }
 
@@ -122,6 +122,9 @@ export async function submitOrder(payload: {
   grandTotal: number;
   cashReceived: number;
   paymentMode: PaymentMode;
+  splitMode2?: PaymentMode | null;
+  splitAmount1?: number;
+  splitAmount2?: number;
   gifts?: { gift_id: string | null; name: string; price: number; quantity: number }[];
 }): Promise<{ orderId: string }> {
   return await dbStore.submitOrder(payload);
