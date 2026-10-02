@@ -3,8 +3,6 @@
 import { useEffect, useState } from "react";
 import { Printer, Copy, Check, MessageCircle, ArrowLeft } from "lucide-react";
 import Link from "next/link";
-import { PrintSettingsDialog } from "@/app/components/PrintSettingsDialog";
-import { paperPrintCss, parsePaperKey, type PrintSettings } from "@/lib/printPaper";
 
 interface InvoiceActionsProps {
   orderId: string;
@@ -12,7 +10,6 @@ interface InvoiceActionsProps {
   customerPhone?: string;
   grandTotal: number;
   isGst?: boolean;
-  initialPaper?: string;
   autoPrint?: boolean;
 }
 
@@ -22,26 +19,15 @@ export function InvoiceActions({
   customerPhone,
   grandTotal,
   isGst,
-  initialPaper,
   autoPrint,
 }: InvoiceActionsProps) {
   const [copied, setCopied] = useState(false);
-  const [showPrintDialog, setShowPrintDialog] = useState(false);
-  const [paper, setPaper] = useState<PrintSettings | null>(parsePaperKey(initialPaper));
-
-  // Opened from the POS "Print Receipt" flow: the paper was already chosen, so print straight away.
+  // Opened from the POS "Print Receipt" flow: print straight away (A4).
   useEffect(() => {
     if (!autoPrint) return;
     const t = setTimeout(() => window.print(), 500);
     return () => clearTimeout(t);
   }, [autoPrint]);
-
-  const printWith = (settings: PrintSettings) => {
-    setPaper(settings);
-    setShowPrintDialog(false);
-    // Wait for the paper stylesheet to be applied before opening the print dialog.
-    setTimeout(() => window.print(), 150);
-  };
 
   const handleCopyLink = () => {
     if (typeof window !== "undefined") {
@@ -51,7 +37,7 @@ export function InvoiceActions({
     }
   };
 
-  const handlePrint = () => setShowPrintDialog(true);
+  const handlePrint = () => window.print();
 
   const handleWhatsAppShare = () => {
     if (typeof window !== "undefined") {
@@ -70,13 +56,6 @@ export function InvoiceActions({
   };
 
   return (
-    <>
-      {paper && <style>{`@media print{${paperPrintCss(paper)}}`}</style>}
-      <PrintSettingsDialog
-        open={showPrintDialog}
-        onClose={() => setShowPrintDialog(false)}
-        onPrint={printWith}
-      />
     <div className="w-full flex flex-wrap items-center justify-between gap-3 bg-white border border-zinc-200/80 rounded-sm p-3 shadow-xs print:hidden">
       {/* Return to POS */}
       <Link
@@ -130,6 +109,5 @@ export function InvoiceActions({
         </button>
       </div>
     </div>
-    </>
   );
 }

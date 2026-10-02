@@ -189,11 +189,6 @@ export default async function InvoicePage({
             customerPhone={order.customer_phone}
             grandTotal={grandTotalNum}
             isGst={order.is_gst}
-            initialPaper={
-              typeof resolvedSearchParams.paper === "string"
-                ? resolvedSearchParams.paper
-                : undefined
-            }
             autoPrint={resolvedSearchParams.autoprint === "1"}
           />
         </div>

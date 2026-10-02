@@ -1,7 +1,5 @@
 "use client";
 
-import { PrintSettingsDialog } from "@/app/components/PrintSettingsDialog";
-import { paperKey, paperPrintCss, type PrintSettings } from "@/lib/printPaper";
 import React, { useState, useRef, useEffect, useCallback } from "react";
 import {
   User,
@@ -513,12 +511,6 @@ export default function POSBilling() {
     items: { name: string; desc: string; price: number; qty: number }[];
   } | null>(null);
   const [isSubmittingOrder, setIsSubmittingOrder] = useState<boolean>(false);
-  // What the user is about to print; set -> the Print Settings dialog asks for printer/paper first.
-  const [printTarget, setPrintTarget] = useState<
-    | { kind: "invoice"; id: string }
-    | { kind: "advance"; data: NonNullable<typeof savedAdvanceData> }
-    | null
-  >(null);
 
   const [catalog, setCatalog] = useState<CatalogItem[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
@@ -1332,11 +1324,23 @@ export default function POSBilling() {
       ? subtotal * (discountValue / 100)
       : discountValue;
   const netInclusive = Math.max(0, subtotal - calculatedDiscount);
-  const gstAmount =
-    applyGST && gstPercentage > 0
-      ? netInclusive - netInclusive / (1 + gstPercentage / 100)
-      : 0;
-  const grandTotal = netInclusive + deliveryFee;
+  // GST is per product and added ON TOP of the price (in rupees). Each product uses its own
+  // saved GST rate (custom items fall back to the default rate). Discount reduces the taxable value.
+  const itemGstRate = (item: OrderItem): number => {
+    const cat = catalog.find(
+      (c) =>
+        (item.product_id && (c.id === item.product_id || c.productId === item.product_id)) ||
+        (item.name && c.name.trim().toLowerCase() === item.name.trim().toLowerCase()),
+    );
+    return typeof cat?.gstRate === "number" ? cat.gstRate : gstPercentage;
+  };
+  const itemGstAmount = (item: OrderItem): number => {
+    if (!applyGST) return 0;
+    const discountFactor = subtotal > 0 ? netInclusive / subtotal : 0;
+    return (item.price * item.qty * itemGstRate(item) / 100) * discountFactor;
+  };
+  const gstAmount = applyGST ? items.reduce((acc, i) => acc + itemGstAmount(i), 0) : 0;
+  const grandTotal = netInclusive + gstAmount + deliveryFee;
 
   // Suggest a GST % from the products currently in the cart (their per-product
   // default rate). Used to pre-fill the changeable GST field when a GST invoice
@@ -1361,9 +1365,6 @@ export default function POSBilling() {
   // invoice on, pre-fill the (still editable) rate from the cart's products.
   const setGstBill = (on: boolean) => {
     setApplyGST(on);
-    if (on) {
-      setGstPercentage(suggestGstRate());
-    }
   };
 
   // ─────────────────────────────────────────
@@ -1683,13 +1684,20 @@ export default function POSBilling() {
       discountType === "percent"
         ? localSubtotal * (discountValue / 100)
         : discountValue;
-    // Prices are GST-inclusive: derive GST from subtotal instead of adding on top.
+    // Per-product GST (in rupees) is added on top of the discounted item total.
     const localNetInclusive = Math.max(0, localSubtotal - localCalculatedDiscount);
-    const localGstAmount =
-      applyGST && gstPercentage > 0
-        ? localNetInclusive - localNetInclusive / (1 + gstPercentage / 100)
+    const localDiscountFactor = localSubtotal > 0 ? localNetInclusive / localSubtotal : 0;
+    const localGstAmount = applyGST
+      ? itemsToSave.reduce(
+          (acc, i) => acc + (i.price * i.qty * itemGstRate(i) / 100) * localDiscountFactor,
+          0,
+        )
+      : 0;
+    const localEffectiveGstPct =
+      applyGST && localNetInclusive > 0
+        ? Math.round((localGstAmount / localNetInclusive) * 10000) / 100
         : 0;
-    const localGrandTotal = localNetInclusive + deliveryFee;
+    const localGrandTotal = localNetInclusive + localGstAmount + deliveryFee;
 
     // Validate totals against PostgreSQL numeric(10,2) overflow limit (99,999,999.99)
     const MAX_LIMIT = 99999999.99;
@@ -1778,7 +1786,7 @@ export default function POSBilling() {
         discountType: discountType === "percent" ? "PERCENT" : "FIXED",
         discountValue: discountValue,
         discountAmount: localCalculatedDiscount,
-        gstPercentage: applyGST ? gstPercentage : 0,
+        gstPercentage: localEffectiveGstPct,
         gstAmount: localGstAmount,
         deliveryFee: deliveryFee,
         grandTotal: localGrandTotal,
@@ -1811,7 +1819,7 @@ export default function POSBilling() {
         discount: Number(localCalculatedDiscount) || 0,
         discountType: discountType === "percent" ? "PERCENT" : "FIXED",
         discountValue: discountValue ? Number(discountValue) : undefined,
-        gstPercentage: applyGST ? Number(gstPercentage) : 0,
+        gstPercentage: localEffectiveGstPct,
         gstAmount: Number(localGstAmount) || 0,
         deliveryFee: Number(deliveryFee) || 0,
         grandTotal: Number(localGrandTotal) || 0,
@@ -1998,7 +2006,7 @@ export default function POSBilling() {
   };
 
   // Open a clean, printable advance-deposit receipt in a new window.
-  const printAdvanceReceipt = (d: NonNullable<typeof savedAdvanceData>, paper: PrintSettings) => {
+  const printAdvanceReceipt = (d: NonNullable<typeof savedAdvanceData>) => {
     const fmt = (n: number) =>
       `₹${(Number(n) || 0).toLocaleString("en-IN", { minimumFractionDigits: 2 })}`;
     const esc = (s: string) =>
@@ -2033,10 +2041,8 @@ export default function POSBilling() {
         .paid{color:#16a34a;font-weight:700}
         .meta{font-size:12px;color:#52525b;margin-top:4px}
         .ft{margin-top:24px;font-size:11px;color:#a1a1aa;text-align:center}
-        @media print{body{padding:0}
-          ${paperPrintCss(paper)}
-          ${paper.type === "thermal" ? "body{max-width:none;font-size:11px} h1{font-size:15px} table{font-size:10px} .row{font-size:11px} .row.big{font-size:13px} html{font-size:16px !important}" : ""}
-        }
+        @page{size:A4 portrait;margin:12mm 10mm}
+        @media print{body{padding:0;max-width:none}}
       </style></head><body>
       <h1>RAJA MOBILES</h1>
       <div class="badge">Advance Receipt — Deposit</div>
@@ -4000,7 +4006,7 @@ export default function POSBilling() {
               {/* Action Buttons Bar */}
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
                 <button
-                  onClick={() => setPrintTarget({ kind: "invoice", id: completedBillData.id })}
+                  onClick={() => window.open(`/invoice/${completedBillData.id}?autoprint=1`, "_blank")}
                   className="bg-white border border-gray-300 hover:bg-gray-50 text-black py-2.5 px-3 rounded-lg font-bold text-[10px] uppercase tracking-wider flex items-center justify-center gap-1.5 shadow-2xs transition-colors cursor-pointer"
                 >
                   <Printer className="w-3.5 h-3.5 text-[#3F3F46]" />
@@ -4171,7 +4177,7 @@ export default function POSBilling() {
                         <Receipt className="w-4 h-4 text-[#3F3F46]" />
                         Order Items
                       </h2>
-                      <div className="flex flex-wrap gap-2 w-full sm:w-auto justify-start sm:justify-end">
+                      <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto justify-start sm:justify-end">
                         <button
                           onClick={clearOrder}
                           className="text-[10px] font-bold text-[#000000] bg-[#FFFFFF] hover:bg-[#FFFFFF] border border-black/10 px-4 py-2 rounded-lg uppercase tracking-wider flex items-center gap-1.5 transition-colors cursor-pointer"
@@ -4203,11 +4209,13 @@ export default function POSBilling() {
                     <div className="flex-1 px-4 sm:px-6 pb-4 sm:pb-6 overflow-visible">
                       {/* Table Header */}
                       <div className="hidden sm:grid grid-cols-12 gap-4 pb-3 border-b border-black/10 text-[9px] font-black text-[#000000] uppercase tracking-[0.15em] mt-4 mb-2">
-                        <div className="col-span-7 pl-2">
+                        <div className="col-span-4 pl-2">
                           Item Name / Description
                         </div>
                         <div className="col-span-2 text-center">Price (₹)</div>
                         <div className="col-span-2 text-center">Qty</div>
+                        <div className={`col-span-1 text-center transition-all ${applyGST ? "" : "opacity-40 blur-[1px]"}`}>GST</div>
+                        <div className="col-span-2 text-right pr-2">Total (₹)</div>
                         <div className="col-span-1"></div>
                       </div>
 
@@ -4219,7 +4227,7 @@ export default function POSBilling() {
                             className="flex flex-col sm:grid sm:grid-cols-12 gap-3 sm:gap-4 items-stretch sm:items-center group border-b border-transparent pb-4 pt-1 overflow-visible relative"
                           >
                             {/* Item Name / Description Input + Catalog Button */}
-                            <div className="col-span-7 relative flex flex-col sm:flex-row items-stretch sm:items-center gap-2 w-full">
+                            <div className="col-span-4 relative flex flex-col sm:flex-row items-stretch sm:items-center gap-2 w-full">
                               <input
                                 type="text"
                                 placeholder="Type custom item name..."
@@ -4469,7 +4477,7 @@ export default function POSBilling() {
                             </div>
 
                             {/* Price, Qty, and Trash (Grid on mobile to prevent overflow, grid on desktop) */}
-                            <div className="col-span-5 grid grid-cols-[minmax(0,1fr)_auto_auto] sm:grid-cols-5 gap-2 sm:gap-4 w-full items-center">
+                            <div className="col-span-8 grid grid-cols-[minmax(0,1fr)_auto_auto] sm:grid-cols-8 gap-2 sm:gap-4 w-full items-center">
                               {/* Price Input */}
                               <div className="sm:col-span-2 flex items-center gap-1.5 sm:gap-2 sm:block min-w-0 w-full">
                                 <span className="text-[10px] font-bold text-[#000000] uppercase sm:hidden shrink-0">
@@ -4516,6 +4524,25 @@ export default function POSBilling() {
                                   >
                                     +
                                   </button>
+                                </div>
+                              </div>
+
+                              {/* Per-product GST: % (left) and ₹ (right), read-only. Blurred + ignored in Non-GST mode. */}
+                              <div
+                                className={`col-span-3 sm:col-span-1 order-last sm:order-none bg-[#F4F4F5] border border-black/10 rounded-lg px-2 py-2 text-center text-xs font-bold text-[#000000] cursor-not-allowed select-none transition-all ${applyGST ? "" : "opacity-40 blur-[1.5px] pointer-events-none"}`}
+                                aria-disabled={!applyGST}
+                                title="GST rate (set per product)"
+                              >
+                                {itemGstRate(item)}%
+                              </div>
+
+                              {/* Line total on the right, with that line's GST in ₹ underneath */}
+                              <div className="col-span-3 sm:col-span-2 order-last sm:order-none text-right pr-1 select-none">
+                                <div className="text-sm font-black text-[#000000]">
+                                  ₹{(item.price * item.qty).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                </div>
+                                <div className={`text-[10px] font-bold text-[#3F3F46] transition-all ${applyGST ? "" : "opacity-40 blur-[1.5px]"}`}>
+                                  GST ₹{itemGstAmount(item).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                                 </div>
                               </div>
 
@@ -4720,7 +4747,7 @@ export default function POSBilling() {
                             {items
                               .filter((i) => i.name)
                               .reduce((sum, i) => sum + i.qty, 0)}{" "}
-                            items) <span className="text-[9px] font-bold text-[#52525B] uppercase">incl. GST</span>
+                            items)
                           </span>
                           <span className="font-bold text-[#000000]">
                             ₹
@@ -4765,32 +4792,14 @@ export default function POSBilling() {
                           {applyGST && (
                             <div className="flex justify-between items-center">
                               <span className="text-xs font-bold text-[#000000] uppercase tracking-wider">
-                                GST <span className="text-[9px] font-bold text-[#52525B]">(incl.)</span>
+                                GST <span className="text-[9px] font-bold text-[#52525B]">(added, per product)</span>
                               </span>
-                              <div className="flex items-center gap-2">
-                                <div className="flex items-center gap-1">
-                                  <input
-                                    type="number"
-                                    className="w-14 text-right bg-white border border-black/10 rounded-lg px-2 py-1 text-xs font-bold text-[#000000] focus:outline-none focus:border-[#3F3F46] [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
-                                    value={gstPercentage || ""}
-                                    onChange={(e) =>
-                                      setGstPercentage(
-                                        parseFloat(e.target.value) || 0,
-                                      )
-                                    }
-                                    placeholder="%"
-                                  />
-                                  <span className="text-xs font-bold text-[#000000]">
-                                    %
-                                  </span>
-                                </div>
-                                <span className="text-xs font-bold text-[#3F3F46] w-20 text-right">
-                                  ₹
-                                  {gstAmount.toLocaleString(undefined, {
-                                    minimumFractionDigits: 2,
-                                  })}
-                                </span>
-                              </div>
+                              <span className="text-xs font-bold text-[#3F3F46] text-right">
+                                +₹
+                                {gstAmount.toLocaleString(undefined, {
+                                  minimumFractionDigits: 2,
+                                })}
+                              </span>
                             </div>
                           )}
                         </div>
@@ -5074,24 +5083,6 @@ export default function POSBilling() {
             </div>
           )}
 
-        <PrintSettingsDialog
-          open={printTarget !== null}
-          onClose={() => setPrintTarget(null)}
-          onPrint={(settings) => {
-            const target = printTarget;
-            setPrintTarget(null);
-            if (!target) return;
-            if (target.kind === "advance") {
-              printAdvanceReceipt(target.data, settings);
-            } else {
-              window.open(
-                `/invoice/${target.id}?paper=${paperKey(settings)}&autoprint=1`,
-                "_blank",
-              );
-            }
-          }}
-        />
-
         {/* ── Advance Order Saved — confirmation receipt (image-2 style) ─── */}
         {activeTab === "billing" && savedAdvanceData && (
           <div className="fixed inset-0 z-[395] flex items-center justify-center p-3 sm:p-4 bg-black/60 backdrop-blur-sm animate-in fade-in duration-200">
@@ -5158,7 +5149,7 @@ export default function POSBilling() {
               {/* Actions */}
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 mt-4">
                 <button
-                  onClick={() => setPrintTarget({ kind: "advance", data: savedAdvanceData })}
+                  onClick={() => printAdvanceReceipt(savedAdvanceData)}
                   className="bg-white border border-gray-300 hover:bg-gray-50 text-black py-2.5 px-3 rounded-lg font-bold text-[10px] uppercase tracking-wider flex items-center justify-center gap-1.5 shadow-2xs transition-colors cursor-pointer"
                 >
                   <Printer className="w-3.5 h-3.5 text-[#3F3F46]" /> Print Receipt
