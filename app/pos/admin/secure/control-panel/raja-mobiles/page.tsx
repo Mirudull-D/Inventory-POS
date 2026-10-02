@@ -1570,7 +1570,7 @@ export default function POSBilling() {
         discountAmount: receiveBalanceDiscountAmount,
         deliveryFee: 0,
         paymentMode: receivePaymentMode,
-        billDate: new Date().toISOString(),
+        billDate: localDateStr(),
       });
       const adv = selectedAdvance;
       const rawSubtotal = Number(adv.total_amount) || 0;
@@ -1791,7 +1791,9 @@ export default function POSBilling() {
         customerAddress: customerAddress || null,
         source: isOnline ? "ONLINE" : "OFFLINE",
         isGst: applyGST,
-        billDate: orderTimestamp,
+        // bill_date is a Postgres DATE: send the local calendar day. A UTC ISO string gets cut
+        // to the UTC date, which is "yesterday" before 5:30 AM IST.
+        billDate: localDateStr(new Date(orderTimestamp)),
         items: itemsToSave.map((i) => ({
           id: i.id,
           product_id: i.product_id || null,
