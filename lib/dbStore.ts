@@ -20,6 +20,16 @@ import {
   AdvanceOrderWithRelations,
 } from './types';
 
+// orders.bill_date is a Postgres DATE. The shop runs on India time, so turn whatever the client
+// sent (a plain YYYY-MM-DD, or a full ISO timestamp) into the IST calendar day. Casting a UTC ISO
+// string straight to DATE would give "yesterday" between 12:00 AM and 5:30 AM IST.
+const toShopBillDate = (value: string): string => {
+  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) return value;
+  const t = new Date(value).getTime();
+  if (isNaN(t)) return value;
+  return new Date(t + 5.5 * 60 * 60 * 1000).toISOString().slice(0, 10);
+};
+
 // Utility to generate a unique ID
 const uid = () => {
   if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
@@ -580,7 +590,7 @@ export const dbStore = {
           ${payload.gstPercentage}, ${payload.gstAmount}, ${payload.deliveryFee},
           ${payload.grandTotal}, ${payload.cashReceived}, ${payload.paymentMode},
           ${payload.splitMode2 ?? null}, ${payload.splitAmount1 ?? 0}, ${payload.splitAmount2 ?? 0},
-          ${payload.billDate}, now()
+          ${toShopBillDate(payload.billDate)}, now()
         )
       `,
       ...batchUpdates.map((u) =>

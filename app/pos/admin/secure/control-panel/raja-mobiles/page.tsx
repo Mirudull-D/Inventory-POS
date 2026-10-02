@@ -503,6 +503,8 @@ export default function POSBilling() {
   // Changes when the calendar day rolls over so "Today" analytics refresh without a reload.
   const [todayKey, setTodayKey] = useState<string>(() => localDateStr());
   const todayKeyRef = useRef<string>(todayKey);
+  // True only when the user picked a bill date by hand; otherwise bills use the real "today".
+  const customDateEditedRef = useRef<boolean>(false);
   useEffect(() => {
     const t = setInterval(() => {
       const now = localDateStr();
@@ -1774,8 +1776,9 @@ export default function POSBilling() {
 
     const currentTimeStr = new Date().toTimeString().split(" ")[0];
     let orderTimestamp = new Date().toISOString();
-    if (customOrderDate) {
-      const parsedDate = new Date(`${customOrderDate}T${currentTimeStr}`);
+    const billDay = customDateEditedRef.current ? customOrderDate : localDateStr();
+    if (billDay) {
+      const parsedDate = new Date(`${billDay}T${currentTimeStr}`);
       if (!isNaN(parsedDate.getTime())) {
         orderTimestamp = parsedDate.toISOString();
       }
@@ -1887,6 +1890,7 @@ export default function POSBilling() {
       setCustomerPhone("");
       setCustomerAddress("");
       setCustomOrderDate(localDateStr());
+      customDateEditedRef.current = false;
       setItems([{ id: "1", name: "", desc: "", price: 0, qty: 1 }]);
       setDiscountValue(0);
       setDeliveryFee(0);
@@ -3308,7 +3312,26 @@ export default function POSBilling() {
                 </p>
               )}
 
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-3 gap-4">
+                <div>
+                  <label className="block text-[10px] font-bold text-gray-600 uppercase tracking-widest mb-1.5">
+                    Cost Price (₹) <span className="text-gray-400 normal-case tracking-normal font-semibold">(optional)</span>
+                  </label>
+                  <input
+                    type="number"
+                    min={0}
+                    placeholder="0.00"
+                    className="w-full bg-white border border-gray-200 hover:border-gray-300 focus:border-[#3F3F46] rounded-lg px-3.5 py-2.5 text-sm font-bold text-black focus:outline-none transition-colors shadow-xs"
+                    value={newCatCostPrice}
+                    onWheel={(e) => e.currentTarget.blur()}
+                    onChange={(e) =>
+                      setNewCatCostPrice(
+                        e.target.value === "" ? "" : parseFloat(e.target.value),
+                      )
+                    }
+                  />
+                </div>
+
                 <div>
                   <label className="block text-[10px] font-bold text-gray-600 uppercase tracking-widest mb-1.5">
                     Selling Price (₹) <span className="text-[#3F3F46]">*</span>
@@ -4175,7 +4198,10 @@ export default function POSBilling() {
                           max={localDateStr()}
                           className="w-full bg-[#FFFFFF]/40 border border-black/10 hover:border-black/10 focus:border-[#3F3F46] focus:bg-white rounded-lg px-4 py-2.5 text-[#000000] text-sm font-bold focus:outline-none transition-colors cursor-pointer shadow-sm"
                           value={customOrderDate}
-                          onChange={(e) => setCustomOrderDate(e.target.value)}
+                          onChange={(e) => {
+                            customDateEditedRef.current = e.target.value !== localDateStr();
+                            setCustomOrderDate(e.target.value);
+                          }}
                         />
                       </div>
                     </div>
