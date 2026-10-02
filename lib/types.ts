@@ -148,6 +148,8 @@ export type AdvanceOrderRow = {
   deposit_payment_mode: PaymentMode;
   delivery_date: string | null;
   notes: string | null;
+  is_gst?: boolean;
+  gst_percentage?: number | string;
   finalized_order_id: string | null;
   finalized_at: string | null;
   cancelled_at: string | null;

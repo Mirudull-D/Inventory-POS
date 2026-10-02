@@ -437,14 +437,14 @@ export default async function InvoicePage({
             <div className="flex justify-between text-zinc-600">
               <span>
                 Subtotal
-                {order.is_gst && (
+                {order.is_gst && gstAmountNum > 0 && (
                   <span className="text-[9px] font-semibold text-zinc-400 uppercase ml-1">
-                    incl. GST
+                    before GST
                   </span>
                 )}
               </span>
               <span className="font-mono text-zinc-900">
-                ₹{subtotalNum.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                ₹{(subtotalNum - (order.is_gst ? gstAmountNum : 0)).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
               </span>
             </div>
 
@@ -462,7 +462,7 @@ export default async function InvoicePage({
             {order.is_gst && gstAmountNum > 0 && (
               <>
                 <div className="pt-1 mt-1 border-t border-dashed border-zinc-200 text-[10px] font-semibold text-zinc-400 uppercase tracking-wider">
-                  GST (included above)
+                  GST (added)
                 </div>
                 <div className="flex justify-between text-zinc-600">
                   <span>CGST ({halfGstRate.toFixed(1)}%)</span>

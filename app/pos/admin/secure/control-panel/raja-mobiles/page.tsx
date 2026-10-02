@@ -1458,6 +1458,13 @@ export default function POSBilling() {
         depositPaymentMode: advDepositPaymentMode,
         deliveryDate: advDeliveryDate || null,
         notes: advNotes.trim() || null,
+        // Remember the GST choice so collecting the balance later produces a GST invoice too.
+        // The effective rate = GST ₹ ÷ taxable value, so the later inclusive math returns the same GST ₹.
+        isGst: applyGST,
+        gstPercentage:
+          applyGST && netInclusive > 0
+            ? Math.round((gstAmount / netInclusive) * 10000) / 100
+            : 0,
         items: items.map((i) => ({
           product_id: i.product_id || null,
           snapshot_name: i.name,
@@ -1503,8 +1510,9 @@ export default function POSBilling() {
     setReceiveDiscountType("FIXED");
     setReceiveDiscountValue("");
     setReceivePaymentMode("CASH");
-    setReceiveIsGst(false);
-    setReceiveGstPct(18);
+    // Default to however the advance order was booked (GST or Non-GST).
+    setReceiveIsGst(Boolean(adv.is_gst));
+    setReceiveGstPct(Number(adv.gst_percentage) || 18);
   };
 
   const openAdvanceView = (adv: AdvanceOrderWithRelations) => {
@@ -1548,9 +1556,17 @@ export default function POSBilling() {
     return receiveDiscountType === "PERCENT" ? base * (val / 100) : val;
   })();
 
+  // GST added now: only when the order was booked WITHOUT GST but is invoiced as GST (added on top).
+  // If it was booked as GST, the GST is already inside the agreed total.
+  const receiveExtraGst = (() => {
+    if (!selectedAdvance || !receiveIsGst || selectedAdvance.is_gst) return 0;
+    const net = Math.max(0, Number(selectedAdvance.total_amount) - receiveBalanceDiscountAmount);
+    return (net * (Number(receiveGstPct) || 0)) / 100;
+  })();
+
   const receiveBalanceFinalAmount = (() => {
     if (!selectedAdvance) return 0;
-    return Math.max(0, balanceRemaining(selectedAdvance) - receiveBalanceDiscountAmount);
+    return Math.max(0, balanceRemaining(selectedAdvance) - receiveBalanceDiscountAmount) + receiveExtraGst;
   })();
 
   const confirmReceiveBalance = async () => {
@@ -1579,8 +1595,11 @@ export default function POSBilling() {
       const netInclusive = Math.max(0, rawSubtotal - receiveBalanceDiscountAmount);
       const gstAmt =
         receiveIsGst && receiveGstPct > 0
-          ? netInclusive - netInclusive / (1 + receiveGstPct / 100)
+          ? adv.is_gst
+            ? netInclusive - netInclusive / (1 + receiveGstPct / 100)
+            : receiveExtraGst
           : 0;
+      const finalGrandTotal = netInclusive + (adv.is_gst ? 0 : receiveExtraGst);
       const nowIso = new Date().toISOString();
       const finalOrder: CompletedOrder = {
         id: invoiceId,
@@ -1603,8 +1622,8 @@ export default function POSBilling() {
         gstPercentage: receiveIsGst ? receiveGstPct : 0,
         gstAmount: gstAmt,
         deliveryFee: 0,
-        grandTotal: netInclusive,
-        cashReceived: netInclusive,
+        grandTotal: finalGrandTotal,
+        cashReceived: finalGrandTotal,
         paymentMode: receivePaymentMode,
         date: nowIso,
         createdAt: nowIso,
@@ -1962,18 +1981,16 @@ export default function POSBilling() {
     let message = `${shopEmoji} *RAJA MOBILES* ${shopEmoji}\n\n`;
     message += `${checkEmoji} Here are your ${order.isGst ? "GST invoice" : "bill"} details!\n\n`;
 
-    message += `Subtotal (incl. GST): ₹${order.subtotal.toLocaleString(undefined, { minimumFractionDigits: 2 })}\n`;
+    // Stored subtotal contains the GST; show the price before GST, then GST as its own line.
+    const gstInsideBill = Number(order.gstAmount) || 0;
+    const showGst = order.isGst && gstInsideBill > 0.1;
+    message += `Subtotal${showGst ? " (before GST)" : ""}: ₹${(order.subtotal - (showGst ? gstInsideBill : 0)).toLocaleString(undefined, { minimumFractionDigits: 2 })}\n`;
     if (order.discount > 0) {
       message += `Discount Applied: -₹${order.discount.toLocaleString(undefined, { minimumFractionDigits: 2 })}\n`;
     }
-
-    // GST already sits inside the subtotal — surface it for the customer only.
-    const gstInsideBill = Number(order.gstAmount) || 0;
-    if (order.isGst && gstInsideBill > 0.1) {
-      const gstLabel = order.gstPercentage
-        ? `GST (${order.gstPercentage}% incl.)`
-        : "GST (incl.)";
-      message += `${gstLabel}: ₹${gstInsideBill.toLocaleString(undefined, { minimumFractionDigits: 2 })}\n`;
+    if (showGst) {
+      const gstLabel = order.gstPercentage ? `GST (${order.gstPercentage}%)` : "GST";
+      message += `${gstLabel}: +₹${gstInsideBill.toLocaleString(undefined, { minimumFractionDigits: 2 })}\n`;
     }
 
     if (order.deliveryFee > 0) {
@@ -2289,6 +2306,7 @@ export default function POSBilling() {
     dayNames,
     monthNames,
     itemSales,
+    productSalesExGst,
     now,
   } = React.useMemo(() => {
     const now = new Date();
@@ -2396,6 +2414,23 @@ export default function POSBilling() {
           itemSales[item.name] = { name: item.name, revenue: 0, qty: 0 };
         itemSales[item.name].revenue += item.price * item.qty;
         itemSales[item.name].qty += item.qty;
+      });
+    });
+
+    // Analytics → Products tab ONLY: product value = price × qty exactly as billed. The bill's GST
+    // (a separate amount on the bill) and its discount/delivery are never mixed into these figures,
+    // whichever of All / GST / Non-GST bills is selected.
+    const productSalesExGst: Record<
+      string,
+      { name: string; revenue: number; qty: number }
+    > = {};
+    analyticsFilteredOrders.forEach((order) => {
+      order.items.forEach((item) => {
+        if (!item.name || item.name.startsWith("GST (")) return;
+        if (!productSalesExGst[item.name])
+          productSalesExGst[item.name] = { name: item.name, revenue: 0, qty: 0 };
+        productSalesExGst[item.name].revenue += item.price * item.qty;
+        productSalesExGst[item.name].qty += item.qty;
       });
     });
     const topItems = Object.values(itemSales)
@@ -2627,6 +2662,7 @@ export default function POSBilling() {
       dayNames,
       monthNames,
       itemSales,
+      productSalesExGst,
       now,
     };
   }, [
@@ -3130,6 +3166,56 @@ export default function POSBilling() {
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
+  };
+
+  // Analytics → Products CSV. Values are product value only (price × qty), GST excluded.
+  const exportAnalyticsProductsCSV = () => {
+    const q = productSearchQuery.toLowerCase();
+    const rowsData = Object.values(productSalesExGst)
+      .filter((i) => i.name.toLowerCase().includes(q))
+      .sort((a, b) => b.revenue - a.revenue);
+    if (rowsData.length === 0) {
+      alert("No product sales available to export.");
+      return;
+    }
+    const total = Object.values(productSalesExGst).reduce((acc, i) => acc + i.revenue, 0);
+    const esc = (v: string | number) => `"${String(v).replace(/"/g, '""')}"`;
+    const headers = [
+      "Rank",
+      "Product Name",
+      "Qty Sold",
+      "Product Value (excl. GST)",
+      "Market Share %",
+      "Bill Type",
+      "Period",
+    ];
+    const billType =
+      analyticsGstFilter === "gst" ? "GST bills" : analyticsGstFilter === "nongst" ? "Non-GST bills" : "All bills";
+    const period =
+      analyticsPeriod === "custom"
+        ? `${analyticsStartDate || "start"} to ${analyticsEndDate || "end"}`
+        : analyticsPeriod;
+    const lines = rowsData.map((item, idx) =>
+      [
+        idx + 1,
+        esc(item.name),
+        item.qty,
+        item.revenue.toFixed(2),
+        total > 0 ? ((item.revenue / total) * 100).toFixed(1) : "0.0",
+        esc(billType),
+        esc(period),
+      ].join(","),
+    );
+    const csv = "﻿" + [headers.map(esc).join(","), ...lines].join("\n");
+    const url = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8;" }));
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `Analytics_Products_${analyticsGstFilter}_${analyticsPeriod}_${localDateStr()}.csv`;
+    link.style.visibility = "hidden";
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
   };
 
   const exportInventoryCSV = () => {
@@ -5449,7 +5535,7 @@ export default function POSBilling() {
                     </div>
 
                     <p className="text-[10px] font-bold text-[#78350F] bg-[#FEF3C7] border border-[#F59E0B]/30 rounded-lg p-2.5">
-                      Confirmation marks the order Completed, creates one official invoice, and recognizes the full ₹{Number(selectedAdvance.total_amount - receiveBalanceDiscountAmount).toLocaleString(undefined, { minimumFractionDigits: 2 })} as revenue.
+                      Confirmation marks the order Completed, creates one official invoice, and recognizes the full ₹{Number(selectedAdvance.total_amount - receiveBalanceDiscountAmount + receiveExtraGst).toLocaleString(undefined, { minimumFractionDigits: 2 })} as revenue.
                     </p>
 
                     <button
@@ -7163,11 +7249,17 @@ export default function POSBilling() {
 
             {analyticsSubTab === "products" && (
               <div className="bg-white border border-black/10 rounded-xl p-6 shadow-sm">
+                <p className="mb-4 text-[11px] font-bold text-[#B91C1C] bg-[#FEE2E2] border border-[#FCA5A5] rounded-lg px-3 py-2.5">
+                  <span className="font-black">Note:</span> Whether you pick All, GST or Non-GST
+                  bills, these figures show only the product value (price × qty). GST is not
+                  included.
+                </p>
                 <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-4">
                   <h3 className="font-bold text-[#000000] text-sm">
                     Product Sales Leaderboard
                   </h3>
 
+                  <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto">
                   {/* Product Search Input */}
                   <div className="flex items-center border border-black/10 bg-[#FFFFFF] rounded-lg px-3 py-1.5 gap-2 shadow-xs w-full sm:w-auto animate-in fade-in duration-200">
                     <Search className="w-3.5 h-3.5 text-[#000000]" />
@@ -7179,9 +7271,16 @@ export default function POSBilling() {
                       onChange={(e) => setProductSearchQuery(e.target.value)}
                     />
                   </div>
+                  <button
+                    onClick={exportAnalyticsProductsCSV}
+                    className="text-[10px] font-bold text-[#000000] bg-white hover:bg-[#F4F4F5] border border-black/10 px-3 py-2 rounded-lg uppercase tracking-wider flex items-center gap-1.5 transition-colors cursor-pointer"
+                  >
+                    <Download className="w-3.5 h-3.5 text-[#3F3F46]" /> Export CSV
+                  </button>
+                  </div>
                 </div>
 
-                {Object.keys(itemSales).length === 0 ? (
+                {Object.keys(productSalesExGst).length === 0 ? (
                   <div className="text-center text-[#000000] text-sm font-semibold py-12">
                     No products sold in this period.
                   </div>
@@ -7208,7 +7307,7 @@ export default function POSBilling() {
                         </tr>
                       </thead>
                       <tbody>
-                        {Object.values(itemSales).filter((item) =>
+                        {Object.values(productSalesExGst).filter((item) =>
                           item.name
                             .toLowerCase()
                             .includes(productSearchQuery.toLowerCase()),
@@ -7222,7 +7321,7 @@ export default function POSBilling() {
                             </td>
                           </tr>
                         ) : (
-                          Object.values(itemSales)
+                          Object.values(productSalesExGst)
                             .filter((item) =>
                               item.name
                                 .toLowerCase()
@@ -7230,9 +7329,13 @@ export default function POSBilling() {
                             )
                             .sort((a, b) => b.revenue - a.revenue)
                             .map((item, idx) => {
+                              const productsTotal = Object.values(productSalesExGst).reduce(
+                                (acc, i) => acc + i.revenue,
+                                0,
+                              );
                               const share =
-                                totalRevenueAmount > 0
-                                  ? (item.revenue / totalRevenueAmount) * 100
+                                productsTotal > 0
+                                  ? (item.revenue / productsTotal) * 100
                                   : 0;
                               return (
                                 <tr
@@ -8766,10 +8869,10 @@ export default function POSBilling() {
                 <div className="border-t border-black/10 pt-4 space-y-2">
                   <div className="flex justify-between text-sm">
                     <span className="text-[#000000] font-semibold">
-                      Subtotal
+                      Subtotal{selectedOrder.isGst && (selectedOrder.gstAmount ?? 0) > 0 ? " (before GST)" : ""}
                     </span>
                     <span className="text-[#000000] font-bold">
-                      ₹{selectedOrder.subtotal.toLocaleString()}
+                      ₹{(selectedOrder.subtotal - (selectedOrder.isGst ? selectedOrder.gstAmount ?? 0 : 0)).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                     </span>
                   </div>
                   {selectedOrder.discount > 0 && (
@@ -8788,7 +8891,7 @@ export default function POSBilling() {
                         GST ({selectedOrder.gstPercentage ?? 0}%)
                       </span>
                       <span className="text-[#000000] font-bold">
-                        ₹{(selectedOrder.gstAmount ?? 0).toLocaleString()}
+                        +₹{(selectedOrder.gstAmount ?? 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                       </span>
                     </div>
                   )}

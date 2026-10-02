@@ -680,6 +680,8 @@ export const dbStore = {
     depositPaymentMode: PaymentMode;
     deliveryDate: string | null;
     notes: string | null;
+    isGst?: boolean;
+    gstPercentage?: number;
     items: {
       product_id: string | null;
       snapshot_name: string;
@@ -697,11 +699,12 @@ export const dbStore = {
     await sql`
       INSERT INTO advance_orders (
         id, customer_id, customer_name, status, subtotal, total_amount, deposit_amount,
-        deposit_payment_mode, delivery_date, notes
+        deposit_payment_mode, delivery_date, notes, is_gst, gst_percentage
       ) VALUES (
         ${payload.advanceOrderId}, ${customer.id}, ${payload.customerName}, 'PENDING',
         ${payload.subtotal}, ${payload.totalAmount}, ${payload.depositAmount},
-        ${payload.depositPaymentMode}, ${payload.deliveryDate}, ${payload.notes}
+        ${payload.depositPaymentMode}, ${payload.deliveryDate}, ${payload.notes},
+        ${Boolean(payload.isGst)}, ${payload.isGst ? payload.gstPercentage ?? 0 : 0}
       )
     `;
 
@@ -769,14 +772,24 @@ export const dbStore = {
       qty: it.quantity,
     }));
 
-    // Grand total math mirrors POSBilling.completeSale (GST-inclusive subtotal).
-    const rawSubtotal = cart.reduce((acc, i) => acc + i.price * i.qty, 0);
-    const netInclusive = Math.max(0, rawSubtotal - payload.discountAmount);
-    const gstAmount =
-      payload.isGst && payload.gstPercentage > 0
-        ? netInclusive - netInclusive / (1 + payload.gstPercentage / 100)
-        : 0;
-    const grandTotal = netInclusive + payload.deliveryFee;
+    // Start from the total agreed when the order was booked (it already contains any GST added
+    // at booking, plus booking discount/delivery), then apply the discount given at collection.
+    const agreedTotal = Number(advance.total_amount) || 0;
+    const net = Math.max(0, agreedTotal - payload.discountAmount);
+    const pct = payload.isGst ? payload.gstPercentage : 0;
+    let gstAmount = 0;
+    let grandTotal = net;
+    if (payload.isGst && pct > 0) {
+      if (advance.is_gst) {
+        // Booked as GST: GST is already inside the agreed total — just show its portion.
+        gstAmount = net - net / (1 + pct / 100);
+      } else {
+        // Booked without GST but invoiced as GST now: GST is added ON TOP of the price.
+        gstAmount = (net * pct) / 100;
+        grandTotal = net + gstAmount;
+      }
+    }
+    grandTotal += payload.deliveryFee;
 
     const { orderId } = await this.submitOrder({
       orderId: payload.invoiceId,
