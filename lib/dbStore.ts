@@ -145,11 +145,11 @@ export const dbStore = {
     );
   },
 
-  async addProduct(input: { name: string; description: string | null; category: string; gst_rate: number; low_stock_threshold: number; tracks_serial?: boolean }): Promise<Product> {
+  async addProduct(input: { name: string; description: string | null; description2?: string | null; category: string; gst_rate: number; low_stock_threshold: number; tracks_serial?: boolean }): Promise<Product> {
     const id = uid();
     const rows = await sql`
-      INSERT INTO products (id, name, description, category, gst_rate, low_stock_threshold, tracks_serial)
-      VALUES (${id}, ${input.name}, ${input.description}, ${input.category}, ${input.gst_rate}, ${input.low_stock_threshold}, ${input.tracks_serial ?? false})
+      INSERT INTO products (id, name, description, description2, category, gst_rate, low_stock_threshold, tracks_serial)
+      VALUES (${id}, ${input.name}, ${input.description}, ${input.description2 ?? null}, ${input.category}, ${input.gst_rate}, ${input.low_stock_threshold}, ${input.tracks_serial ?? false})
       RETURNING *
     `;
     return rows[0] as Product;
@@ -161,6 +161,7 @@ export const dbStore = {
     // We update fields individually since dynamic SET with Neon SQL template tag is tricky
     if (patch.name !== undefined) await sql`UPDATE products SET name = ${patch.name} WHERE id = ${id}`;
     if (patch.description !== undefined) await sql`UPDATE products SET description = ${patch.description} WHERE id = ${id}`;
+    if (patch.description2 !== undefined) await sql`UPDATE products SET description2 = ${patch.description2} WHERE id = ${id}`;
     if (patch.category !== undefined) await sql`UPDATE products SET category = ${patch.category} WHERE id = ${id}`;
     if (patch.gst_rate !== undefined) await sql`UPDATE products SET gst_rate = ${patch.gst_rate} WHERE id = ${id}`;
     if (patch.low_stock_threshold !== undefined) await sql`UPDATE products SET low_stock_threshold = ${patch.low_stock_threshold} WHERE id = ${id}`;
@@ -345,7 +346,16 @@ export const dbStore = {
     if (orders.length === 0) return null;
 
     const [items, gifts] = await Promise.all([
-      sql`SELECT * FROM order_items WHERE order_id = ${id}`,
+      sql`
+        SELECT oi.*,
+               b.batch_no AS batch_no,
+               p.description AS product_description,
+               p.description2 AS product_description2
+        FROM order_items oi
+        LEFT JOIN product_batches b ON b.id = oi.batch_id
+        LEFT JOIN products p ON p.id = oi.product_id
+        WHERE oi.order_id = ${id}
+      `,
       sql`SELECT * FROM order_gifts WHERE order_id = ${id}`,
     ]);
 
@@ -443,6 +453,11 @@ export const dbStore = {
     grandTotal: number;
     cashReceived: number;
     paymentMode: PaymentMode;
+    // Split payment (optional): when splitMode2 is set the bill is paid across two
+    // modes — paymentMode takes splitAmount1 and splitMode2 takes splitAmount2.
+    splitMode2?: PaymentMode | null;
+    splitAmount1?: number;
+    splitAmount2?: number;
     gifts?: { gift_id: string | null; name: string; price: number; quantity: number }[];
   }): Promise<{ orderId: string }> {
     // Neon HTTP doesn't natively support full interactive transactions in the simple API,
@@ -557,13 +572,14 @@ export const dbStore = {
         INSERT INTO orders (
           id, customer_id, source, status, is_gst, subtotal, discount_type, discount_value,
           discount_amount, gst_percentage, gst_amount, delivery_fee, grand_total,
-          cash_received, payment_mode, bill_date, created_at
+          cash_received, payment_mode, split_mode_2, split_amount_1, split_amount_2, bill_date, created_at
         ) VALUES (
           ${payload.orderId}, ${customer.id}, ${payload.source}, 'COMPLETED', ${payload.isGst},
           ${subtotalInclusive},
           ${payload.discountType}, ${payload.discountValue}, ${payload.discountAmount},
           ${payload.gstPercentage}, ${payload.gstAmount}, ${payload.deliveryFee},
           ${payload.grandTotal}, ${payload.cashReceived}, ${payload.paymentMode},
+          ${payload.splitMode2 ?? null}, ${payload.splitAmount1 ?? 0}, ${payload.splitAmount2 ?? 0},
           ${payload.billDate}, now()
         )
       `,

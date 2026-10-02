@@ -1,5 +1,7 @@
 "use client";
 
+import { PrintSettingsDialog } from "@/app/components/PrintSettingsDialog";
+import { paperKey, paperPrintCss, type PrintSettings } from "@/lib/printPaper";
 import React, { useState, useRef, useEffect, useCallback } from "react";
 import {
   User,
@@ -142,10 +144,29 @@ const isDateInPeriod = (
   return true;
 };
 
+// Join two descriptions for display as "desc1 - desc2" (either may be empty).
+const combineDesc = (d1?: string | null, d2?: string | null): string =>
+  [d1, d2].map((d) => (d || "").trim()).filter(Boolean).join(" - ");
+
+const money = (n: number) =>
+  `₹${(Number(n) || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}`;
+
+// Human-readable payment summary — shows the split breakdown when the order was split.
+const paymentSummary = (o: {
+  paymentMode: string;
+  splitMode2?: string | null;
+  splitAmount1?: number;
+  splitAmount2?: number;
+}): string =>
+  o.splitMode2
+    ? `${o.paymentMode} ${money(o.splitAmount1 || 0)} + ${o.splitMode2} ${money(o.splitAmount2 || 0)}`
+    : o.paymentMode;
+
 type CatalogItem = {
   id: string;
   name: string;
-  desc?: string;
+  desc?: string; // raw first description
+  desc2?: string; // raw second description (shown hyphen-joined with desc)
   category?: string;
   price?: number;
   gstRate?: number;
@@ -190,6 +211,9 @@ type CompletedOrder = {
   grandTotal: number;
   cashReceived: number;
   paymentMode: OrderPaymentMode;
+  splitMode2?: OrderPaymentMode | null;
+  splitAmount1?: number;
+  splitAmount2?: number;
   date: string;
   createdAt: string;
   status: "Completed" | "Pending";
@@ -230,14 +254,15 @@ const SearchableItemInput = ({
     (c) =>
       (activeCategory === "ALL" || (c.category || "General") === activeCategory) &&
       (c.name.toLowerCase().includes(internalSearch.toLowerCase()) ||
-        (c.desc && c.desc.toLowerCase().includes(internalSearch.toLowerCase()))),
+        combineDesc(c.desc, c.desc2).toLowerCase().includes(internalSearch.toLowerCase()) ||
+        (c.batchNo && c.batchNo.toLowerCase().includes(internalSearch.toLowerCase()))),
   );
 
   // Apply a catalog pick to this cart row. For serialized products, leave the
   // unit unset so the row can prompt for a specific IMEI/serial next.
   const selectItem = (catItem: CatalogItem) => {
     updateItem(item.id, "name", catItem.name);
-    updateItem(item.id, "desc", catItem.desc || "");
+    updateItem(item.id, "desc", combineDesc(catItem.desc, catItem.desc2));
     updateItem(item.id, "product_id", catItem.productId || null);
     updateItem(item.id, "unit_id", null);
     updateItem(item.id, "serial", null);
@@ -384,9 +409,14 @@ const SearchableItemInput = ({
                             : `Stock: ${catItem.stockQuantity}`}
                         </div>
                       </div>
-                      {catItem.desc && (
+                      {combineDesc(catItem.desc, catItem.desc2) && (
                         <div className="text-[11px] font-semibold uppercase tracking-wider text-[#000000] mt-1">
-                          {catItem.desc}
+                          {combineDesc(catItem.desc, catItem.desc2)}
+                        </div>
+                      )}
+                      {catItem.batchNo && (
+                        <div className="text-[10px] font-bold text-[#3F3F46] mt-0.5">
+                          Batch: {catItem.batchNo}
                         </div>
                       )}
                     </li>
@@ -437,6 +467,9 @@ export default function POSBilling() {
   const [advNotes, setAdvNotes] = useState<string>("");
   const [advDepositPaymentMode, setAdvDepositPaymentMode] = useState<OrderPaymentMode>("CASH");
   const [isSavingAdvance, setIsSavingAdvance] = useState(false);
+  const [advPeriod, setAdvPeriod] = useState<"all" | "today" | "week" | "month" | "year" | "custom">("all");
+  const [advStartDate, setAdvStartDate] = useState<string>(new Date().toISOString().split("T")[0]);
+  const [advEndDate, setAdvEndDate] = useState<string>(new Date().toISOString().split("T")[0]);
 
   const [selectedAdvance, setSelectedAdvance] = useState<AdvanceOrderWithRelations | null>(null);
   const [advanceViewMode, setAdvanceViewMode] = useState<"view" | "receive" | null>(null);
@@ -456,12 +489,36 @@ export default function POSBilling() {
   const [deliveryFee, setDeliveryFee] = useState<number>(0);
   const [cashReceived, setCashReceived] = useState<number>(0);
   const [paymentMode, setPaymentMode] = useState<OrderPaymentMode>("CASH");
+  // Split payment: when on, the bill is paid across two modes with manually-entered amounts.
+  const [isSplitPayment, setIsSplitPayment] = useState<boolean>(false);
+  const [splitMode1, setSplitMode1] = useState<OrderPaymentMode>("CASH");
+  const [splitMode2, setSplitMode2] = useState<OrderPaymentMode>("GPAY");
+  const [splitAmount1, setSplitAmount1] = useState<number | "">("");
+  const [splitAmount2, setSplitAmount2] = useState<number | "">("");
   const [applyGST, setApplyGST] = useState<boolean>(false);
   const [gstPercentage, setGstPercentage] = useState<number>(18);
   const [activeInvoiceId, setActiveInvoiceId] = useState<string | null>(null);
   const [completedBillData, setCompletedBillData] =
     useState<CompletedOrder | null>(null);
+  // "Advance Order Saved" confirmation receipt shown after saving a deposit hold.
+  const [savedAdvanceData, setSavedAdvanceData] = useState<{
+    id: string;
+    customerName: string;
+    customerPhone: string;
+    orderTotal: number;
+    depositPaid: number;
+    balanceDue: number;
+    depositMode: OrderPaymentMode;
+    deliveryDate: string | null;
+    items: { name: string; desc: string; price: number; qty: number }[];
+  } | null>(null);
   const [isSubmittingOrder, setIsSubmittingOrder] = useState<boolean>(false);
+  // What the user is about to print; set -> the Print Settings dialog asks for printer/paper first.
+  const [printTarget, setPrintTarget] = useState<
+    | { kind: "invoice"; id: string }
+    | { kind: "advance"; data: NonNullable<typeof savedAdvanceData> }
+    | null
+  >(null);
 
   const [catalog, setCatalog] = useState<CatalogItem[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
@@ -608,6 +665,7 @@ export default function POSBilling() {
       productId: p.id,
       name: p.name,
       desc: p.description || undefined,
+      desc2: p.description2 || undefined,
       category: p.category || undefined,
       price: Number(p.active_selling_price) || 0,
       gstRate: Number(p.gst_rate) || 0,
@@ -684,6 +742,11 @@ export default function POSBilling() {
             )
               ? (o.payment_mode as OrderPaymentMode)
               : "CASH",
+            splitMode2: o.split_mode_2
+              ? (o.split_mode_2 as OrderPaymentMode)
+              : null,
+            splitAmount1: Number(o.split_amount_1) || 0,
+            splitAmount2: Number(o.split_amount_2) || 0,
             date: o.bill_date,
             createdAt: o.created_at,
             status: o.status === "COMPLETED" ? "Completed" : "Pending",
@@ -699,7 +762,7 @@ export default function POSBilling() {
 
   useEffect(() => {
     fetchData();
-    if (typeof window !== "undefined" && window.innerWidth < 1024) {
+    if (typeof window !== "undefined" && window.innerWidth < 1280) {
       setIsSidebarOpen(false);
     }
   }, []);
@@ -714,6 +777,7 @@ export default function POSBilling() {
   );
   const [newCatName, setNewCatName] = useState("");
   const [newCatDesc, setNewCatDesc] = useState("");
+  const [newCatDesc2, setNewCatDesc2] = useState("");
   const [newCatPrice, setNewCatPrice] = useState<number | "">("");
   const [newCatCostPrice, setNewCatCostPrice] = useState<number | "">("");
   const [newCatGst, setNewCatGst] = useState<number | "">(18);
@@ -875,6 +939,7 @@ export default function POSBilling() {
     setEditingBatchId(null);
     setNewCatName("");
     setNewCatDesc("");
+    setNewCatDesc2("");
     setNewCatPrice("");
     setNewCatCostPrice("");
     setNewCatGst(18);
@@ -965,6 +1030,7 @@ export default function POSBilling() {
     setEditingCatalogId(catItem.id);
     setNewCatName(catItem.name || "");
     setNewCatDesc(catItem.desc || "");
+    setNewCatDesc2(catItem.desc2 || "");
     setNewCatPrice(catItem.price ?? "");
     setNewCatGst(typeof catItem.gstRate === "number" ? catItem.gstRate : 18);
     setNewCatStock(
@@ -1011,7 +1077,8 @@ export default function POSBilling() {
 
     const productPayload = {
       name: newCatName.trim(),
-      description: newCatDesc || null,
+      description: newCatDesc.trim() || null,
+      description2: newCatDesc2.trim() || null,
       category: newCatCategory.trim() || "General",
       gst_rate: newCatGst === "" ? 0 : Number(newCatGst),
       low_stock_threshold: newCatThreshold === "" ? 5 : Number(newCatThreshold),
@@ -1082,6 +1149,7 @@ export default function POSBilling() {
                   ...c,
                   name: data.name,
                   desc: data.description || undefined,
+                  desc2: data.description2 || undefined,
                   lowStockThreshold: data.low_stock_threshold,
                   gstRate: Number(data.gst_rate) || 0,
                 }
@@ -1342,6 +1410,18 @@ export default function POSBilling() {
     }
 
     const advId = generateAdvanceOrderId();
+    // Snapshot the order details for the confirmation receipt BEFORE the form is reset.
+    const receiptCustomerName = customerName.trim() || "Guest";
+    const receiptCustomerPhone = customerPhone;
+    const receiptOrderTotal = grandTotal;
+    const receiptDepositMode = advDepositPaymentMode;
+    const receiptDeliveryDate = advDeliveryDate || null;
+    const receiptItems = items.map((i) => ({
+      name: i.name,
+      desc: i.desc || "",
+      price: Number(i.price) || 0,
+      qty: Number(i.qty) || 0,
+    }));
     setIsSavingAdvance(true);
     try {
       await createAdvanceOrder({
@@ -1373,9 +1453,19 @@ export default function POSBilling() {
       setDeliveryFee(0);
       setCashReceived(0);
       setShowAdvanceSaveModal(false);
-      await fetchData();
-      alert(`Advance order ${advId} saved. Deposit ₹${deposit.toLocaleString(undefined, { minimumFractionDigits: 2 })} recorded.`);
-      setActiveTab("advance");
+      // Show the "Advance Order Saved" confirmation instantly; refresh lists in the background.
+      setSavedAdvanceData({
+        id: advId,
+        customerName: receiptCustomerName,
+        customerPhone: receiptCustomerPhone,
+        orderTotal: receiptOrderTotal,
+        depositPaid: deposit,
+        balanceDue: Math.max(0, receiptOrderTotal - deposit),
+        depositMode: receiptDepositMode,
+        deliveryDate: receiptDeliveryDate,
+        items: receiptItems,
+      });
+      fetchData().catch((e) => console.error("Background refresh error:", e));
     } catch (err) {
       console.error("Failed to save advance order:", err);
       alert("Could not save the advance order. Please try again.");
@@ -1402,6 +1492,27 @@ export default function POSBilling() {
   const closeAdvanceDialog = () => {
     setSelectedAdvance(null);
     setAdvanceViewMode(null);
+  };
+
+  const inAdvPeriod = (dateStr: string): boolean => {
+    if (advPeriod === "all") return true;
+    const t = new Date(dateStr).getTime();
+    const now = new Date();
+    if (advPeriod === "today") return new Date(dateStr).toDateString() === now.toDateString();
+    if (advPeriod === "week") {
+      const dow = now.getDay();
+      const start = new Date(now.getFullYear(), now.getMonth(), now.getDate() + (dow === 0 ? -6 : 1 - dow));
+      return t >= start.getTime();
+    }
+    if (advPeriod === "month") return t >= new Date(now.getFullYear(), now.getMonth(), 1).getTime();
+    if (advPeriod === "year") return t >= new Date(now.getFullYear(), 0, 1).getTime();
+    const start = advStartDate ? new Date(advStartDate) : null;
+    if (start) start.setHours(0, 0, 0, 0);
+    const end = advEndDate ? new Date(advEndDate) : null;
+    if (end) end.setHours(23, 59, 59, 999);
+    if (start && t < start.getTime()) return false;
+    if (end && t > end.getTime()) return false;
+    return true;
   };
 
   const balanceRemaining = (adv: AdvanceOrderWithRelations) =>
@@ -1440,9 +1551,45 @@ export default function POSBilling() {
         paymentMode: receivePaymentMode,
         billDate: new Date().toISOString(),
       });
+      const adv = selectedAdvance;
+      const rawSubtotal = Number(adv.total_amount) || 0;
+      const netInclusive = Math.max(0, rawSubtotal - receiveBalanceDiscountAmount);
+      const gstAmt =
+        receiveIsGst && receiveGstPct > 0
+          ? netInclusive - netInclusive / (1 + receiveGstPct / 100)
+          : 0;
+      const nowIso = new Date().toISOString();
+      const finalOrder: CompletedOrder = {
+        id: invoiceId,
+        customerName: adv.customer_name || "Guest",
+        customerPhone: adv.customer_phone,
+        customerAddress: adv.customer_address || null,
+        source: "OFFLINE",
+        isGst: receiveIsGst,
+        items: adv.items.map((i, idx) => ({
+          id: `oi-${invoiceId}-${idx}`,
+          name: i.snapshot_name,
+          desc: i.snapshot_desc || "",
+          price: Number(i.snapshot_price) || 0,
+          qty: Number(i.quantity) || 0,
+        })),
+        subtotal: rawSubtotal,
+        discount: receiveBalanceDiscountAmount,
+        discountType: receiveDiscountType,
+        discountValue: Number(receiveDiscountValue) || 0,
+        gstPercentage: receiveIsGst ? receiveGstPct : 0,
+        gstAmount: gstAmt,
+        deliveryFee: 0,
+        grandTotal: netInclusive,
+        cashReceived: netInclusive,
+        paymentMode: receivePaymentMode,
+        date: nowIso,
+        createdAt: nowIso,
+        status: "Completed",
+      };
       closeAdvanceDialog();
-      await fetchData();
-      alert(`Payment received. Invoice ${invoiceId} created and revenue recognized.`);
+      setCompletedBillData(finalOrder);
+      fetchData().catch((e) => console.error("Background refresh error:", e));
     } catch (err) {
       console.error("Failed to finalize advance order:", err);
       alert("Could not finalize the advance order. Please try again.");
@@ -1569,6 +1716,34 @@ export default function POSBilling() {
       return null;
     }
 
+    // Split payment: validate the two amounts add up to the grand total.
+    let effectivePaymentMode: OrderPaymentMode = paymentMode;
+    let splitMode2ToSave: OrderPaymentMode | null = null;
+    let splitAmt1 = 0;
+    let splitAmt2 = 0;
+    let effectiveCashReceived = cashReceived;
+    if (isSplitPayment) {
+      splitAmt1 = Number(splitAmount1) || 0;
+      splitAmt2 = Number(splitAmount2) || 0;
+      if (splitMode1 === splitMode2) {
+        alert("Please choose two different payment modes for a split payment.");
+        return null;
+      }
+      if (splitAmt1 <= 0 || splitAmt2 <= 0) {
+        alert("Please enter both split amounts (each greater than 0).");
+        return null;
+      }
+      if (Math.abs(splitAmt1 + splitAmt2 - localGrandTotal) > 0.01) {
+        alert(
+          `Split amounts must add up to the grand total of ₹${localGrandTotal.toLocaleString(undefined, { minimumFractionDigits: 2 })}. Currently they total ₹${(splitAmt1 + splitAmt2).toLocaleString(undefined, { minimumFractionDigits: 2 })}.`,
+        );
+        return null;
+      }
+      effectivePaymentMode = splitMode1;
+      splitMode2ToSave = splitMode2;
+      effectiveCashReceived = splitAmt1 + splitAmt2;
+    }
+
     const currentTimeStr = new Date().toTimeString().split(" ")[0];
     let orderTimestamp = new Date().toISOString();
     if (customOrderDate) {
@@ -1607,8 +1782,11 @@ export default function POSBilling() {
         gstAmount: localGstAmount,
         deliveryFee: deliveryFee,
         grandTotal: localGrandTotal,
-        cashReceived: cashReceived,
-        paymentMode: paymentMode,
+        cashReceived: effectiveCashReceived,
+        paymentMode: effectivePaymentMode,
+        splitMode2: splitMode2ToSave,
+        splitAmount1: splitAmt1,
+        splitAmount2: splitAmt2,
         gifts: freeGifts
           .filter((g) => g.name.trim())
           .map((g) => ({ gift_id: null, name: g.name.trim(), price: Number(g.price) || 0, quantity: 1 })),
@@ -1637,8 +1815,11 @@ export default function POSBilling() {
         gstAmount: Number(localGstAmount) || 0,
         deliveryFee: Number(deliveryFee) || 0,
         grandTotal: Number(localGrandTotal) || 0,
-        cashReceived: Number(cashReceived) || 0,
-        paymentMode: paymentMode,
+        cashReceived: Number(effectiveCashReceived) || 0,
+        paymentMode: effectivePaymentMode,
+        splitMode2: splitMode2ToSave,
+        splitAmount1: splitAmt1,
+        splitAmount2: splitAmt2,
         date: orderTimestamp,
         createdAt: new Date().toISOString(),
         status: "Completed",
@@ -1681,6 +1862,11 @@ export default function POSBilling() {
       setDeliveryFee(0);
       setCashReceived(0);
       setPaymentMode("CASH");
+      setIsSplitPayment(false);
+      setSplitMode1("CASH");
+      setSplitMode2("GPAY");
+      setSplitAmount1("");
+      setSplitAmount2("");
       setFreeGifts([]);
       setApplyGST(false);
       setGstPercentage(18);
@@ -1761,7 +1947,7 @@ export default function POSBilling() {
     }
 
     message += `\n${moneyEmoji} *Total Amount: ₹${order.grandTotal.toLocaleString(undefined, { minimumFractionDigits: 2 })}*\n`;
-    message += `Payment: ${order.paymentMode}\n\n`;
+    message += `Payment: ${paymentSummary(order)}\n\n`;
     message += `${receiptEmoji} View and download your detailed digital receipt here:\n${invoiceUrl}`;
     const encodedMessage = encodeURIComponent(message);
     const cleanPhone = order.customerPhone.replace(/\D/g, "").slice(-10);
@@ -1774,6 +1960,106 @@ export default function POSBilling() {
     } else {
       window.open(whatsappUrl, "_blank");
     }
+  };
+
+  // Share the advance-deposit summary with the customer on WhatsApp.
+  const advanceReceiptWhatsApp = (d: NonNullable<typeof savedAdvanceData>) => {
+    if (!d.customerPhone || d.customerPhone.replace(/\D/g, "").length < 10) {
+      alert("Invalid customer phone number for this advance order.");
+      return;
+    }
+    const shopEmoji = String.fromCodePoint(0x2728);
+    const checkEmoji = String.fromCodePoint(0x2705);
+    const moneyEmoji = String.fromCodePoint(0x1f4b0);
+    let message = `${shopEmoji} *RAJA MOBILES* ${shopEmoji}\n\n`;
+    message += `${checkEmoji} Your advance order has been booked!\n\n`;
+    message += `Order ID: ${d.id}\n`;
+    const itemLine = d.items
+      .filter((i) => i.name.trim())
+      .map((i) => `${i.qty}× ${i.name}`)
+      .join(", ");
+    if (itemLine) message += `Items: ${itemLine}\n`;
+    message += `\nOrder Total: ${money(d.orderTotal)}\n`;
+    message += `${moneyEmoji} Deposit Paid (${d.depositMode}): ${money(d.depositPaid)}\n`;
+    message += `*Balance Due: ${money(d.balanceDue)}*\n`;
+    if (d.deliveryDate) {
+      message += `\nExpected Delivery: ${new Date(d.deliveryDate).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" })}\n`;
+    }
+    message += `\nPlease keep this message for collection. Thank you!`;
+    const encodedMessage = encodeURIComponent(message);
+    const cleanPhone = d.customerPhone.replace(/\D/g, "").slice(-10);
+    const whatsappUrl = `https://api.whatsapp.com/send?phone=91${cleanPhone}&text=${encodedMessage}`;
+    const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+    if (isMobile) {
+      window.location.href = whatsappUrl;
+    } else {
+      window.open(whatsappUrl, "_blank");
+    }
+  };
+
+  // Open a clean, printable advance-deposit receipt in a new window.
+  const printAdvanceReceipt = (d: NonNullable<typeof savedAdvanceData>, paper: PrintSettings) => {
+    const fmt = (n: number) =>
+      `₹${(Number(n) || 0).toLocaleString("en-IN", { minimumFractionDigits: 2 })}`;
+    const esc = (s: string) =>
+      String(s).replace(/[&<>"]/g, (c) =>
+        ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c] as string),
+      );
+    const rows = d.items
+      .filter((i) => i.name.trim())
+      .map(
+        (i) =>
+          `<tr><td>${esc(i.name)}${i.desc ? `<div class="d">${esc(i.desc)}</div>` : ""}</td><td class="c">${i.qty}</td><td class="r">${fmt(i.price)}</td><td class="r">${fmt(i.price * i.qty)}</td></tr>`,
+      )
+      .join("");
+    const deliveryLine = d.deliveryDate
+      ? `<div class="meta">Expected Delivery: <b>${esc(new Date(d.deliveryDate).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" }))}</b></div>`
+      : "";
+    const html = `<!doctype html><html><head><meta charset="utf-8"><title>Advance Receipt ${esc(d.id)}</title>
+      <style>
+        *{box-sizing:border-box} body{font-family:ui-sans-serif,system-ui,Arial,sans-serif;color:#18181b;margin:0;padding:24px;max-width:480px}
+        h1{font-size:20px;margin:0}
+        .badge{display:inline-block;background:#FEF3C7;color:#92400e;font-size:10px;font-weight:800;letter-spacing:.08em;padding:3px 8px;border-radius:6px;text-transform:uppercase;margin-top:6px}
+        .sub{color:#71717a;font-size:12px;font-family:ui-monospace,monospace;margin-top:4px}
+        table{width:100%;border-collapse:collapse;margin:16px 0;font-size:13px}
+        th{text-align:left;border-bottom:2px solid #e4e4e7;padding:6px 4px;font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:#a1a1aa}
+        td{padding:8px 4px;border-bottom:1px solid #f4f4f5;vertical-align:top}
+        .c{text-align:center} .r{text-align:right;font-variant-numeric:tabular-nums}
+        .d{font-size:11px;color:#71717a;margin-top:2px}
+        .tot{margin-top:12px;border-top:2px solid #18181b;padding-top:10px}
+        .row{display:flex;justify-content:space-between;padding:4px 0;font-size:14px}
+        .row.big{font-size:16px;font-weight:800}
+        .due{background:#FEE2E2;color:#991b1b;border-radius:8px;padding:10px 12px;margin-top:8px;display:flex;justify-content:space-between;font-weight:800}
+        .paid{color:#16a34a;font-weight:700}
+        .meta{font-size:12px;color:#52525b;margin-top:4px}
+        .ft{margin-top:24px;font-size:11px;color:#a1a1aa;text-align:center}
+        @media print{body{padding:0}
+          ${paperPrintCss(paper)}
+          ${paper.type === "thermal" ? "body{max-width:none;font-size:11px} h1{font-size:15px} table{font-size:10px} .row{font-size:11px} .row.big{font-size:13px} html{font-size:16px !important}" : ""}
+        }
+      </style></head><body>
+      <h1>RAJA MOBILES</h1>
+      <div class="badge">Advance Receipt — Deposit</div>
+      <div class="sub">#${esc(d.id)}</div>
+      <div class="meta" style="margin-top:10px">Customer: <b>${esc(d.customerName)}</b>${d.customerPhone ? ` · ${esc(d.customerPhone)}` : ""}</div>
+      ${deliveryLine}
+      <table><thead><tr><th>Item</th><th class="c">Qty</th><th class="r">Rate</th><th class="r">Amount</th></tr></thead><tbody>${rows}</tbody></table>
+      <div class="tot">
+        <div class="row big"><span>Order Total</span><span>${fmt(d.orderTotal)}</span></div>
+        <div class="row"><span>Deposit Paid (${esc(d.depositMode)})</span><span class="paid">${fmt(d.depositPaid)}</span></div>
+      </div>
+      <div class="due"><span>Balance Due</span><span>${fmt(d.balanceDue)}</span></div>
+      <div class="ft">Balance payable on collection. Not a tax invoice. Thank you!</div>
+      <script>window.onload=function(){setTimeout(function(){window.print()},150)}<\/script>
+      </body></html>`;
+    const w = window.open("", "_blank", "width=480,height=700");
+    if (!w) {
+      alert("Please allow pop-ups to print the advance receipt.");
+      return;
+    }
+    w.document.open();
+    w.document.write(html);
+    w.document.close();
   };
 
   const handleDeleteOrder = async (orderId: string) => {
@@ -2336,7 +2622,7 @@ export default function POSBilling() {
       const q = inventorySearch.toLowerCase();
       return (
         p.name.toLowerCase().includes(q) ||
-        (p.desc || "").toLowerCase().includes(q) ||
+        combineDesc(p.desc, p.desc2).toLowerCase().includes(q) ||
         (p.batchNo || "").toLowerCase().includes(q) ||
         (p.manufacturer || "").toLowerCase().includes(q) ||
         (p.hsnCode || "").toLowerCase().includes(q)
@@ -2731,6 +3017,12 @@ export default function POSBilling() {
       "Discount      ",
       "Delivery Fee  ",
       "Grand Total   ",
+      "Payment                         ",
+      "Split Payment ",
+      "Split Mode 1  ",
+      "Split Amount 1",
+      "Split Mode 2  ",
+      "Split Amount 2",
       "Status        ",
       "Items                                                                               ",
     ];
@@ -2768,6 +3060,12 @@ export default function POSBilling() {
         o.discount,
         o.deliveryFee,
         o.grandTotal,
+        paymentSummary(o),
+        o.splitMode2 ? "Yes" : "No",
+        o.splitMode2 ? o.paymentMode : "",
+        o.splitMode2 ? o.splitAmount1 || 0 : "",
+        o.splitMode2 ? o.splitMode2 : "",
+        o.splitMode2 ? o.splitAmount2 || 0 : "",
         o.status,
         `"${itemsStr.replace(/"/g, '""')}"`,
       ];
@@ -2810,6 +3108,7 @@ export default function POSBilling() {
       "Product ID",
       "Name",
       "Description",
+      "Description 2",
       "Price",
       "GST %",
       "Stock Qty",
@@ -2822,6 +3121,7 @@ export default function POSBilling() {
       p.id,
       p.name,
       p.desc || "",
+      p.desc2 || "",
       p.price ?? "",
       p.gstRate ?? "",
       p.stockQuantity ?? "",
@@ -2907,18 +3207,37 @@ export default function POSBilling() {
                 />
               </div>
 
-              <div>
-                <label className="block text-[10px] font-bold text-gray-600 uppercase tracking-widest mb-1.5">
-                  Description (Optional)
-                </label>
-                <input
-                  type="text"
-                  placeholder="e.g., 128GB, Ice Blue, 6GB RAM"
-                  className="w-full bg-white border border-gray-200 hover:border-gray-300 focus:border-[#3F3F46] rounded-lg px-3.5 py-2.5 text-sm font-semibold text-black focus:outline-none transition-colors shadow-xs"
-                  value={newCatDesc}
-                  onChange={(e) => setNewCatDesc(e.target.value)}
-                />
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-[10px] font-bold text-gray-600 uppercase tracking-widest mb-1.5">
+                    Description 1 (Optional)
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="e.g., 128GB, Ice Blue, 6GB RAM"
+                    className="w-full bg-white border border-gray-200 hover:border-gray-300 focus:border-[#3F3F46] rounded-lg px-3.5 py-2.5 text-sm font-semibold text-black focus:outline-none transition-colors shadow-xs"
+                    value={newCatDesc}
+                    onChange={(e) => setNewCatDesc(e.target.value)}
+                  />
+                </div>
+                <div>
+                  <label className="block text-[10px] font-bold text-gray-600 uppercase tracking-widest mb-1.5">
+                    Description 2 (Optional)
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="e.g., 1 Year Warranty"
+                    className="w-full bg-white border border-gray-200 hover:border-gray-300 focus:border-[#3F3F46] rounded-lg px-3.5 py-2.5 text-sm font-semibold text-black focus:outline-none transition-colors shadow-xs"
+                    value={newCatDesc2}
+                    onChange={(e) => setNewCatDesc2(e.target.value)}
+                  />
+                </div>
               </div>
+              {(newCatDesc.trim() || newCatDesc2.trim()) && (
+                <p className="text-[9px] text-gray-400 font-semibold -mt-2">
+                  Shows as: <span className="text-gray-600 font-bold">{combineDesc(newCatDesc, newCatDesc2)}</span>
+                </p>
+              )}
 
               <div>
                 <label className="block text-[10px] font-bold text-gray-600 uppercase tracking-widest mb-1.5">
@@ -3358,12 +3677,12 @@ export default function POSBilling() {
 
       {/* Collapsible Left Sidebar */}
       <aside
-        className={`fixed lg:sticky top-0 bottom-0 left-0 bg-gradient-to-b from-[#4F46E5] via-[#7C3AED] to-[#5B21B6] text-[#FFFFFF] flex flex-col justify-between h-screen shrink-0 shadow-2xl z-40 transition-all duration-300 ease-in-out ${isSidebarOpen ? "w-64 border-r border-white/20 translate-x-0" : "w-0 min-w-0 border-r-0 -translate-x-64 overflow-hidden"}`}
+        className={`fixed lg:sticky top-0 bottom-0 left-0 bg-gradient-to-b from-[#4F46E5] via-[#7C3AED] to-[#5B21B6] text-[#FFFFFF] flex flex-col justify-between h-screen shrink-0 shadow-2xl z-40 transition-all duration-300 ease-in-out ${isSidebarOpen ? "w-60 xl:w-64 border-r border-white/20 translate-x-0" : "w-0 min-w-0 border-r-0 -translate-x-full overflow-hidden"}`}
       >
-        <div className="w-64 flex flex-col justify-between h-full shrink-0 overflow-hidden relative">
-          <div className="flex flex-col">
+        <div className="w-60 xl:w-64 flex flex-col h-full shrink-0 overflow-hidden relative">
+          <div className="flex flex-col flex-1 min-h-0">
             {/* Header branding */}
-            <div className="p-6 border-b border-white/20 flex items-center justify-between gap-3">
+            <div className="p-6 [@media(max-height:800px)]:p-4 border-b border-white/20 flex items-center justify-between gap-3 shrink-0">
               <div className="flex items-center gap-3">
                 <div className="w-12 h-12 bg-[#FFFFFF] rounded-xl flex items-center justify-center shadow-md overflow-hidden shrink-0">
                   <img
@@ -3393,7 +3712,7 @@ export default function POSBilling() {
             </div>
 
             {/* Navigation Links */}
-            <nav className="px-4 py-6 space-y-2">
+            <nav className="flex-1 min-h-0 overflow-y-auto overscroll-contain px-3 xl:px-4 py-4 space-y-2 [@media(max-height:800px)]:space-y-1 [&::-webkit-scrollbar]:w-1 [&::-webkit-scrollbar-thumb]:bg-white/30 [&::-webkit-scrollbar-thumb]:rounded">
               <button
                 onClick={() => {
                   setActiveTab("billing");
@@ -3401,7 +3720,7 @@ export default function POSBilling() {
                   if (mainScrollRef.current) mainScrollRef.current.scrollTop = 0;
                   window.scrollTo({ top: 0, behavior: "instant" });
                 }}
-                className={`w-full flex items-center gap-4 px-4 py-3.5 rounded-xl font-bold text-xs uppercase tracking-wider transition-colors cursor-pointer ${
+                className={`w-full flex items-center gap-3 xl:gap-4 px-3 xl:px-4 py-3.5 [@media(max-height:800px)]:py-2.5 rounded-xl font-bold text-xs uppercase tracking-wider transition-colors cursor-pointer ${
                   activeTab === "billing"
                     ? "bg-white text-[#27272A] shadow-md"
                     : "text-white/90 hover:bg-white/20 hover:text-white"
@@ -3417,7 +3736,7 @@ export default function POSBilling() {
                   if (mainScrollRef.current) mainScrollRef.current.scrollTop = 0;
                   window.scrollTo({ top: 0, behavior: "instant" });
                 }}
-                className={`w-full flex items-center gap-4 px-4 py-3.5 rounded-xl font-bold text-xs uppercase tracking-wider transition-colors cursor-pointer ${
+                className={`w-full flex items-center gap-3 xl:gap-4 px-3 xl:px-4 py-3.5 [@media(max-height:800px)]:py-2.5 rounded-xl font-bold text-xs uppercase tracking-wider transition-colors cursor-pointer ${
                   activeTab === "orders"
                     ? "bg-white text-[#27272A] shadow-md"
                     : "text-white/90 hover:bg-white/20 hover:text-white"
@@ -3433,7 +3752,7 @@ export default function POSBilling() {
                   if (mainScrollRef.current) mainScrollRef.current.scrollTop = 0;
                   window.scrollTo({ top: 0, behavior: "instant" });
                 }}
-                className={`w-full flex items-center gap-4 px-4 py-3.5 rounded-xl font-bold text-xs uppercase tracking-wider transition-colors cursor-pointer relative ${
+                className={`w-full flex items-center gap-3 xl:gap-4 px-3 xl:px-4 py-3.5 [@media(max-height:800px)]:py-2.5 rounded-xl font-bold text-xs uppercase tracking-wider transition-colors cursor-pointer relative ${
                   activeTab === "advance"
                     ? "bg-white text-[#27272A] shadow-md"
                     : "text-white/90 hover:bg-white/20 hover:text-white"
@@ -3454,7 +3773,7 @@ export default function POSBilling() {
                   if (mainScrollRef.current) mainScrollRef.current.scrollTop = 0;
                   window.scrollTo({ top: 0, behavior: "instant" });
                 }}
-                className={`w-full flex items-center gap-4 px-4 py-3.5 rounded-xl font-bold text-xs uppercase tracking-wider transition-colors cursor-pointer relative ${
+                className={`w-full flex items-center gap-3 xl:gap-4 px-3 xl:px-4 py-3.5 [@media(max-height:800px)]:py-2.5 rounded-xl font-bold text-xs uppercase tracking-wider transition-colors cursor-pointer relative ${
                   activeTab === "alerts"
                     ? "bg-white text-[#27272A] shadow-md"
                     : "text-white/90 hover:bg-white/20 hover:text-white"
@@ -3478,7 +3797,7 @@ export default function POSBilling() {
                     if (mainScrollRef.current) mainScrollRef.current.scrollTop = 0;
                     window.scrollTo({ top: 0, behavior: "instant" });
                   }}
-                  className={`w-full flex items-center gap-4 px-4 py-3.5 rounded-xl font-bold text-xs uppercase tracking-wider transition-colors cursor-pointer ${
+                  className={`w-full flex items-center gap-3 xl:gap-4 px-3 xl:px-4 py-3.5 [@media(max-height:800px)]:py-2.5 rounded-xl font-bold text-xs uppercase tracking-wider transition-colors cursor-pointer ${
                     activeTab === "inventory"
                       ? "bg-white text-[#27272A] shadow-md"
                       : "text-white/90 hover:bg-white/20 hover:text-white"
@@ -3496,7 +3815,7 @@ export default function POSBilling() {
                     if (mainScrollRef.current) mainScrollRef.current.scrollTop = 0;
                     window.scrollTo({ top: 0, behavior: "instant" });
                   }}
-                  className={`w-full flex items-center gap-4 px-4 py-3.5 rounded-xl font-bold text-xs uppercase tracking-wider transition-colors cursor-pointer ${
+                  className={`w-full flex items-center gap-3 xl:gap-4 px-3 xl:px-4 py-3.5 [@media(max-height:800px)]:py-2.5 rounded-xl font-bold text-xs uppercase tracking-wider transition-colors cursor-pointer ${
                     activeTab === "analytics"
                       ? "bg-white text-[#27272A] shadow-md"
                       : "text-white/90 hover:bg-white/20 hover:text-white"
@@ -3514,7 +3833,7 @@ export default function POSBilling() {
                     if (mainScrollRef.current) mainScrollRef.current.scrollTop = 0;
                     window.scrollTo({ top: 0, behavior: "instant" });
                   }}
-                  className={`w-full flex items-center gap-4 px-4 py-3.5 rounded-xl font-bold text-xs uppercase tracking-wider transition-colors cursor-pointer ${
+                  className={`w-full flex items-center gap-3 xl:gap-4 px-3 xl:px-4 py-3.5 [@media(max-height:800px)]:py-2.5 rounded-xl font-bold text-xs uppercase tracking-wider transition-colors cursor-pointer ${
                     activeTab === "expenses"
                       ? "bg-white text-[#27272A] shadow-md"
                       : "text-white/90 hover:bg-white/20 hover:text-white"
@@ -3525,10 +3844,10 @@ export default function POSBilling() {
                 </button>
               )}
 
-              <div className="pt-4 border-t border-white/20 mt-4">
+              <div className="pt-3 border-t border-white/20 mt-3">
                 <button
                   onClick={handleLogout}
-                  className="w-full flex items-center gap-4 px-4 py-3.5 rounded-xl font-bold text-xs uppercase tracking-wider text-white bg-white/10 hover:bg-white/25 hover:shadow-md border border-white/20 transition-all cursor-pointer"
+                  className="w-full flex items-center gap-3 xl:gap-4 px-3 xl:px-4 py-3.5 [@media(max-height:800px)]:py-2.5 rounded-xl font-bold text-xs uppercase tracking-wider text-white bg-white/10 hover:bg-white/25 hover:shadow-md border border-white/20 transition-all cursor-pointer"
                 >
                   <LogOut className="w-5 h-5" />
                   Log Out
@@ -3538,7 +3857,7 @@ export default function POSBilling() {
           </div>
 
           {/* Footer branding */}
-          <div className="p-5 border-t border-white/20 bg-white/10 flex items-center gap-3">
+          <div className="p-5 [@media(max-height:800px)]:p-3 border-t border-white/20 bg-white/10 flex items-center gap-3 shrink-0">
             <div className="w-8 h-8 rounded-full bg-white/20 border border-white/30 flex items-center justify-center text-white font-black text-xs uppercase">
               {role === "admin" ? "A" : "S"}
             </div>
@@ -3599,7 +3918,7 @@ export default function POSBilling() {
         </header>
 
         {/* Bill Generated — shown as a modal over the billing screen (not a new page) */}
-        {activeTab === "billing" && completedBillData && (
+        {completedBillData && (
           <div className="fixed inset-0 z-[390] flex items-center justify-center p-2 sm:p-4 bg-black/60 backdrop-blur-sm animate-in fade-in duration-200">
             <div className="flex flex-col gap-4 w-full max-w-[640px] min-w-0 bg-white rounded-2xl shadow-2xl p-4 sm:p-5 max-h-[94vh] overflow-y-auto animate-in zoom-in-95 duration-200">
               {/* Header Bar */}
@@ -3630,10 +3949,10 @@ export default function POSBilling() {
 
               {/* Payment Receipt Card */}
               <div className="bg-white rounded-xl p-4 sm:p-5 border border-black/10 shadow-xs space-y-3">
-                <div className="text-[10px] font-extrabold text-gray-400 uppercase tracking-widest border-b border-gray-100 pb-2 flex justify-between items-center">
+                <div className="text-[10px] font-extrabold text-gray-400 uppercase tracking-widest border-b border-gray-100 pb-2 flex justify-between items-center gap-2">
                   <span>Payment Receipt</span>
-                  <span className="text-[9px] font-black text-[#3F3F46] bg-black/5 px-2 py-0.5 rounded">
-                    {completedBillData.paymentMode}
+                  <span className="text-[9px] font-black text-[#3F3F46] bg-black/5 px-2 py-0.5 rounded text-right normal-case tracking-normal">
+                    {paymentSummary(completedBillData)}
                   </span>
                 </div>
 
@@ -3681,11 +4000,18 @@ export default function POSBilling() {
               {/* Action Buttons Bar */}
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
                 <button
-                  onClick={() => setActiveInvoiceId(completedBillData.id)}
+                  onClick={() => setPrintTarget({ kind: "invoice", id: completedBillData.id })}
                   className="bg-white border border-gray-300 hover:bg-gray-50 text-black py-2.5 px-3 rounded-lg font-bold text-[10px] uppercase tracking-wider flex items-center justify-center gap-1.5 shadow-2xs transition-colors cursor-pointer"
                 >
                   <Printer className="w-3.5 h-3.5 text-[#3F3F46]" />
                   Print Receipt
+                </button>
+                <button
+                  onClick={() => setActiveInvoiceId(completedBillData.id)}
+                  className="bg-white border border-gray-300 hover:bg-gray-50 text-black py-2.5 px-3 rounded-lg font-bold text-[10px] uppercase tracking-wider flex items-center justify-center gap-1.5 shadow-2xs transition-colors cursor-pointer"
+                >
+                  <Eye className="w-3.5 h-3.5 text-[#3F3F46]" />
+                  View
                 </button>
                 <button
                   onClick={() => resendWhatsApp(completedBillData)}
@@ -3964,11 +4290,21 @@ export default function POSBilling() {
                                           (activeCategory === "ALL" ||
                                             (c.category || "General") ===
                                               activeCategory) &&
-                                          c.name
+                                          (c.name
                                             .toLowerCase()
                                             .includes(
                                               catalogSearch.toLowerCase(),
-                                            ),
+                                            ) ||
+                                            combineDesc(c.desc, c.desc2)
+                                              .toLowerCase()
+                                              .includes(
+                                                catalogSearch.toLowerCase(),
+                                              ) ||
+                                            (c.batchNo || "")
+                                              .toLowerCase()
+                                              .includes(
+                                                catalogSearch.toLowerCase(),
+                                              )),
                                       );
                                       return list.length > 0 ? (
                                         list.map((catItem) => {
@@ -3997,7 +4333,7 @@ export default function POSBilling() {
                                                   updateItem(
                                                     item.id,
                                                     "desc",
-                                                    catItem.desc || "",
+                                                    combineDesc(catItem.desc, catItem.desc2),
                                                   );
                                                   updateItem(
                                                     item.id,
@@ -4052,17 +4388,24 @@ export default function POSBilling() {
                                                       : `Stock: ${catItem.stockQuantity}`}
                                                   </span>
                                                 </div>
-                                                {catItem.desc && (
+                                                {combineDesc(catItem.desc, catItem.desc2) && (
                                                   <span className="text-[10px] font-semibold uppercase tracking-wider text-[#000000] mt-0.5">
-                                                    {catItem.desc}
+                                                    {combineDesc(catItem.desc, catItem.desc2)}
                                                   </span>
                                                 )}
-                                                {catItem.price !==
-                                                  undefined && (
-                                                  <span className="text-[10px] font-bold text-[#3F3F46] mt-0.5">
-                                                    ₹{catItem.price}
-                                                  </span>
-                                                )}
+                                                <div className="flex items-center gap-2 mt-0.5">
+                                                  {catItem.price !==
+                                                    undefined && (
+                                                    <span className="text-[10px] font-bold text-[#3F3F46]">
+                                                      ₹{catItem.price}
+                                                    </span>
+                                                  )}
+                                                  {catItem.batchNo && (
+                                                    <span className="text-[10px] font-bold text-[#3F3F46]/70">
+                                                      • Batch: {catItem.batchNo}
+                                                    </span>
+                                                  )}
+                                                </div>
                                               </button>
                                               <div className="flex shrink-0">
                                                 <button
@@ -4455,25 +4798,106 @@ export default function POSBilling() {
 
                       {/* Financial Option — payment method / EMI provider */}
                       <div className="pt-2 space-y-1.5">
-                        <span className="block text-[9px] font-bold text-[#000000] uppercase tracking-wider">
-                          Financial Option
-                        </span>
-                        <div className="grid grid-cols-3 gap-1.5">
-                          {ORDER_PAYMENT_MODES.map((mode) => (
-                            <button
-                              key={mode}
-                              type="button"
-                              onClick={() => setPaymentMode(mode)}
-                              className={`py-1.5 rounded-lg text-[10px] font-bold tracking-wider uppercase transition-all cursor-pointer border ${
-                                paymentMode === mode
-                                  ? "bg-[#3F3F46] text-white border-[#3F3F46] shadow-sm"
-                                  : "bg-white text-[#000000] border-black/10 hover:border-[#3F3F46]"
-                              }`}
-                            >
-                              {mode}
-                            </button>
-                          ))}
+                        <div className="flex items-center justify-between">
+                          <span className="block text-[9px] font-bold text-[#000000] uppercase tracking-wider">
+                            Financial Option
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => setIsSplitPayment((v) => !v)}
+                            className={`text-[9px] font-bold uppercase tracking-wider px-2.5 py-1 rounded-md border transition-all cursor-pointer ${
+                              isSplitPayment
+                                ? "bg-[#3F3F46] text-white border-[#3F3F46]"
+                                : "bg-white text-[#3F3F46] border-[#3F3F46]/40 hover:border-[#3F3F46]"
+                            }`}
+                          >
+                            {isSplitPayment ? "✕ Split On" : "⇄ Split Payment"}
+                          </button>
                         </div>
+
+                        {!isSplitPayment ? (
+                          <div className="grid grid-cols-3 gap-1.5">
+                            {ORDER_PAYMENT_MODES.map((mode) => (
+                              <button
+                                key={mode}
+                                type="button"
+                                onClick={() => setPaymentMode(mode)}
+                                className={`py-1.5 rounded-lg text-[10px] font-bold tracking-wider uppercase transition-all cursor-pointer border ${
+                                  paymentMode === mode
+                                    ? "bg-[#3F3F46] text-white border-[#3F3F46] shadow-sm"
+                                    : "bg-white text-[#000000] border-black/10 hover:border-[#3F3F46]"
+                                }`}
+                              >
+                                {mode}
+                              </button>
+                            ))}
+                          </div>
+                        ) : (
+                          <div className="bg-white border border-black/10 rounded-2xl p-4 space-y-3">
+                            <div className="text-[10px] font-black text-black uppercase tracking-widest">
+                              Split Payment
+                            </div>
+                            <div className="grid grid-cols-2 gap-3">
+                              {([
+                                { mode: splitMode1, setMode: setSplitMode1, amt: splitAmount1, setAmt: setSplitAmount1 },
+                                { mode: splitMode2, setMode: setSplitMode2, amt: splitAmount2, setAmt: setSplitAmount2 },
+                              ] as const).map((f, idx) => (
+                                <div key={idx} className="min-w-0">
+                                  <div className="relative mb-1.5">
+                                    <select
+                                      value={f.mode}
+                                      onChange={(e) => f.setMode(e.target.value as OrderPaymentMode)}
+                                      className="w-full appearance-none bg-[#F4F4F5] hover:bg-[#EDEDEF] border border-black/10 rounded-lg pl-3 pr-8 py-2 text-xs font-black text-black focus:outline-none focus:border-[#3F3F46] cursor-pointer"
+                                    >
+                                      {ORDER_PAYMENT_MODES.map((m) => (
+                                        <option
+                                          key={m}
+                                          value={m}
+                                          disabled={m === (idx === 0 ? splitMode2 : splitMode1)}
+                                        >
+                                          {m === "CASH" ? "Cash" : m === "GPAY" ? "GPay" : m} (₹)
+                                        </option>
+                                      ))}
+                                    </select>
+                                    <ChevronDown className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-[#3F3F46]" />
+                                  </div>
+                                  <input
+                                    type="number"
+                                    min={0}
+                                    value={f.amt}
+                                    onWheel={(e) => e.currentTarget.blur()}
+                                    onChange={(e) => f.setAmt(e.target.value === "" ? "" : parseFloat(e.target.value))}
+                                    placeholder="0.00"
+                                    className="w-full bg-white border border-black/10 rounded-xl px-3 py-2.5 text-lg font-black text-black focus:outline-none focus:border-[#3F3F46]"
+                                  />
+                                </div>
+                              ))}
+                            </div>
+                            {(() => {
+                              const received = (Number(splitAmount1) || 0) + (Number(splitAmount2) || 0);
+                              const remaining = grandTotal - received;
+                              const balanced = Math.abs(remaining) < 0.01;
+                              const fmt = (n: number) =>
+                                `₹${Math.abs(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+                              return (
+                                <div className="border-t border-black/10 pt-3 space-y-2">
+                                  <div className="flex justify-between items-center">
+                                    <span className="text-xs font-black uppercase tracking-wider text-black">Total Received</span>
+                                    <span className="text-base font-black text-[#3F5F7F]">{fmt(received)}</span>
+                                  </div>
+                                  <div className="flex justify-between items-center">
+                                    <span className="text-xs font-black uppercase tracking-wider text-black">
+                                      {remaining < -0.01 ? "Over By" : "Balance Remaining"}
+                                    </span>
+                                    <span className={`text-base font-black ${balanced ? "text-[#16A34A]" : "text-[#DC2626]"}`}>
+                                      {balanced ? "✓ ₹0.00" : fmt(remaining)}
+                                    </span>
+                                  </div>
+                                </div>
+                              );
+                            })()}
+                          </div>
+                        )}
                       </div>
 
                       {/* Free Gift — this bill only; price is NOT part of totals or analytics */}
@@ -4538,7 +4962,8 @@ export default function POSBilling() {
                         </span>
                       </div>
 
-                      {/* Cash / Finance Amount Received */}
+                      {/* Cash / Finance Amount Received — hidden during split (amounts entered above) */}
+                      {!isSplitPayment && (
                       <div className="bg-[#FFFFFF]/40 border border-black/10 rounded-xl p-4 mt-2">
                         <span className="block text-[9px] font-bold text-[#000000] uppercase tracking-wider mb-0.5">
                           {paymentMode === "CASH" ? "Cash Payment" : paymentMode === "GPAY" ? "GPay Payment" : `${paymentMode} Finance`}
@@ -4557,9 +4982,10 @@ export default function POSBilling() {
                           placeholder="0.00"
                         />
                       </div>
+                      )}
 
                       {/* Change Return */}
-                      {cashReceived > 0 && (
+                      {!isSplitPayment && cashReceived > 0 && (
                         <div className="flex justify-between items-center bg-white border border-black/10 rounded-lg p-3 text-xs">
                           <span className="font-bold text-[#000000] uppercase tracking-[0.05em]">
                             Change Return
@@ -4647,6 +5073,118 @@ export default function POSBilling() {
               </div>
             </div>
           )}
+
+        <PrintSettingsDialog
+          open={printTarget !== null}
+          onClose={() => setPrintTarget(null)}
+          onPrint={(settings) => {
+            const target = printTarget;
+            setPrintTarget(null);
+            if (!target) return;
+            if (target.kind === "advance") {
+              printAdvanceReceipt(target.data, settings);
+            } else {
+              window.open(
+                `/invoice/${target.id}?paper=${paperKey(settings)}&autoprint=1`,
+                "_blank",
+              );
+            }
+          }}
+        />
+
+        {/* ── Advance Order Saved — confirmation receipt (image-2 style) ─── */}
+        {activeTab === "billing" && savedAdvanceData && (
+          <div className="fixed inset-0 z-[395] flex items-center justify-center p-3 sm:p-4 bg-black/60 backdrop-blur-sm animate-in fade-in duration-200">
+            <div className="w-full max-w-md bg-white rounded-2xl shadow-2xl p-5 sm:p-6 max-h-[94vh] overflow-y-auto animate-in zoom-in-95 duration-200">
+              {/* Header */}
+              <div className="flex justify-between items-start pb-3 border-b border-black/10">
+                <div>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <h1 className="text-xl sm:text-2xl font-black text-[#000000] tracking-tight">
+                      Advance Order Saved
+                    </h1>
+                    <span className="text-[9px] font-black uppercase tracking-wider px-2 py-0.5 rounded bg-[#FEF3C7] text-[#92400E]">
+                      Deposit
+                    </span>
+                  </div>
+                  <p className="text-[11px] font-mono font-bold text-[#3F3F46] mt-1">
+                    #{savedAdvanceData.id}
+                  </p>
+                </div>
+                <button
+                  onClick={() => setSavedAdvanceData(null)}
+                  className="flex items-center gap-1.5 bg-[#000000] hover:bg-[#27272A] text-white px-3 py-2 rounded-lg text-[10px] font-black uppercase tracking-wider transition-colors cursor-pointer shrink-0"
+                >
+                  <Plus className="w-3.5 h-3.5" /> New Sale
+                </button>
+              </div>
+
+              {/* Receipt card */}
+              <div className="mt-4 border border-black/10 rounded-xl p-4 space-y-3">
+                <div className="text-[10px] font-extrabold text-gray-400 uppercase tracking-widest border-b border-gray-100 pb-2">
+                  Advance Receipt — Deposit via {savedAdvanceData.depositMode}
+                </div>
+                <div className="flex justify-between items-center text-xs">
+                  <span className="font-semibold text-gray-600">Order Total</span>
+                  <span className="text-xl font-black text-black">
+                    {money(savedAdvanceData.orderTotal)}
+                  </span>
+                </div>
+                <div className="flex justify-between items-center text-xs">
+                  <span className="font-semibold text-gray-600">Deposit Paid</span>
+                  <span className="text-sm font-black text-[#16A34A]">
+                    {money(savedAdvanceData.depositPaid)}
+                  </span>
+                </div>
+                <div className="bg-[#FEE2E2] border border-[#FCA5A5]/50 rounded-lg p-3.5 flex justify-between items-center mt-1">
+                  <span className="text-xs font-bold text-[#991B1B]">Balance Due</span>
+                  <span className="text-base sm:text-lg font-black text-[#991B1B]">
+                    {money(savedAdvanceData.balanceDue)}
+                  </span>
+                </div>
+                {savedAdvanceData.deliveryDate && (
+                  <div className="flex items-center gap-1.5 text-[11px] font-bold text-[#52525B] pt-0.5">
+                    <Clock className="w-3.5 h-3.5 text-[#3F3F46]" />
+                    Expected delivery:{" "}
+                    {new Date(savedAdvanceData.deliveryDate).toLocaleDateString("en-IN", {
+                      day: "2-digit",
+                      month: "short",
+                      year: "numeric",
+                    })}
+                  </div>
+                )}
+              </div>
+
+              {/* Actions */}
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 mt-4">
+                <button
+                  onClick={() => setPrintTarget({ kind: "advance", data: savedAdvanceData })}
+                  className="bg-white border border-gray-300 hover:bg-gray-50 text-black py-2.5 px-3 rounded-lg font-bold text-[10px] uppercase tracking-wider flex items-center justify-center gap-1.5 shadow-2xs transition-colors cursor-pointer"
+                >
+                  <Printer className="w-3.5 h-3.5 text-[#3F3F46]" /> Print Receipt
+                </button>
+                <button
+                  onClick={() => advanceReceiptWhatsApp(savedAdvanceData)}
+                  className="bg-[#10B981] hover:bg-[#059669] text-white py-2.5 px-3 rounded-lg font-bold text-[10px] uppercase tracking-wider flex items-center justify-center gap-1.5 shadow-sm transition-colors cursor-pointer"
+                >
+                  <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="currentColor">
+                    <path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51a12.8 12.8 0 0 0-.57-.012c-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 0 1-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 0 1-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 0 1 2.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0 0 12.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 0 0 5.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 0 0-3.48-8.413Z" />
+                  </svg>
+                  WhatsApp
+                </button>
+                <button
+                  onClick={() => {
+                    setSavedAdvanceData(null);
+                    setActiveTab("advance");
+                  }}
+                  className="bg-[#000000] hover:bg-[#27272A] text-white py-2.5 px-3 rounded-lg font-bold text-[10px] uppercase tracking-wider flex items-center justify-center gap-1.5 shadow-sm transition-colors cursor-pointer"
+                >
+                  <Package className="w-3.5 h-3.5" /> View Advance
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* ── Save-as-Advance modal (opens from billing) ─────────── */}
         {showAdvanceSaveModal && (
@@ -4899,6 +5437,52 @@ export default function POSBilling() {
                 <h2 className="text-[28px] font-black text-[#000000] tracking-tight">Advance Orders</h2>
                 <p className="text-xs text-[#000000] font-semibold mt-1">Partial-payment holds — revenue is recognized only when the balance is collected.</p>
               </div>
+              <div className="flex flex-wrap items-center gap-3 w-full lg:w-auto">
+                <div className="flex flex-wrap items-center bg-white border border-black/10 rounded-xl p-1 gap-1 max-w-full">
+                  <span className="text-[9px] font-bold text-black uppercase tracking-wider px-2">Period:</span>
+                  {(["all", "today", "week", "month", "year"] as const).map((p) => (
+                    <button
+                      key={p}
+                      onClick={() => {
+                        setAdvPeriod(p);
+                        setAdvStartDate("");
+                        setAdvEndDate("");
+                      }}
+                      className={`px-3 py-1 rounded-lg text-[10px] font-bold uppercase tracking-wider transition-all cursor-pointer ${
+                        advPeriod === p ? "bg-[#3F3F46] text-white shadow-sm" : "text-black hover:bg-black/5"
+                      }`}
+                    >
+                      {p === "all" ? "All Time" : p === "today" ? "Today" : p === "week" ? "This Week" : p === "month" ? "This Month" : "This Year"}
+                    </button>
+                  ))}
+                </div>
+                <div className="flex flex-wrap items-center border rounded-xl px-3 py-1.5 gap-2 shadow-sm bg-white border-black/10 min-w-0">
+                  <div className="flex items-center gap-1">
+                    <span className="text-[9px] font-bold uppercase tracking-wider text-black">From:</span>
+                    <input
+                      type="date"
+                      value={advStartDate}
+                      onChange={(e) => {
+                        setAdvPeriod("custom");
+                        setAdvStartDate(e.target.value);
+                      }}
+                      className="text-xs font-bold bg-transparent border-none outline-none focus:ring-0 cursor-pointer text-black w-[115px]"
+                    />
+                  </div>
+                  <div className="flex items-center gap-1">
+                    <span className="text-[9px] font-bold uppercase tracking-wider text-black">To:</span>
+                    <input
+                      type="date"
+                      value={advEndDate}
+                      onChange={(e) => {
+                        setAdvPeriod("custom");
+                        setAdvEndDate(e.target.value);
+                      }}
+                      className="text-xs font-bold bg-transparent border-none outline-none focus:ring-0 cursor-pointer text-black w-[115px]"
+                    />
+                  </div>
+                </div>
+              </div>
             </div>
 
             {/* Summary cards */}
@@ -4984,6 +5568,7 @@ export default function POSBilling() {
                 const q = advSearchQuery.trim().toLowerCase();
                 const filtered = advanceOrders.filter((a) => {
                   if (advStatusFilter !== "ALL" && a.status !== advStatusFilter) return false;
+                  if (!inAdvPeriod(a.created_at)) return false;
                   if (!q) return true;
                   return (
                     a.id.toLowerCase().includes(q) ||
@@ -5462,6 +6047,9 @@ export default function POSBilling() {
                               </td>
                               <td className="p-4 text-sm font-black text-[#3F3F46]">
                                 ₹{order.grandTotal.toLocaleString()}
+                                <span className={`block text-[9px] font-bold mt-0.5 ${order.splitMode2 ? "text-[#B45309]" : "text-black/50"}`}>
+                                  {order.splitMode2 ? "⇄ " : ""}{paymentSummary(order)}
+                                </span>
                               </td>
                               <td className="p-4 text-right">
                                 <div className="flex flex-row items-center justify-end gap-1.5">
@@ -7538,24 +8126,6 @@ export default function POSBilling() {
                     onChange={(e) => setInventorySearch(e.target.value)}
                   />
                 </div>
-                <select
-                  value={`${inventorySortField}_${inventorySortOrder}`}
-                  onChange={(e) => {
-                    const [f, o] = e.target.value.split("_") as [any, "asc" | "desc"];
-                    setInventorySortField(f);
-                    setInventorySortOrder(o);
-                  }}
-                  className="bg-white border border-black/10 rounded-lg px-3 py-2 text-xs font-bold text-[#000000] focus:outline-none focus:border-[#3F3F46] cursor-pointer"
-                >
-                  <option value="name_asc">Name: A to Z</option>
-                  <option value="name_desc">Name: Z to A</option>
-                  <option value="price_asc">Price: Low to High</option>
-                  <option value="price_desc">Price: High to Low</option>
-                  <option value="stock_desc">Stock: High to Low</option>
-                  <option value="stock_asc">Stock: Low to High</option>
-                  <option value="gst_desc">GST: High to Low</option>
-                  <option value="brand_asc">Brand: A to Z</option>
-                </select>
                 <button
                   onClick={exportInventoryCSV}
                   className="text-[10px] font-bold text-[#000000] bg-white border border-black/10 hover:bg-[#FAFAFA] px-3 py-2 rounded-lg uppercase tracking-wider flex items-center gap-1.5 transition-colors cursor-pointer"
@@ -7794,9 +8364,9 @@ export default function POSBilling() {
                                         {isExpanded ? "▲ Hide Details" : "▼ Open in detail"}
                                       </span>
                                     </div>
-                                    {p.desc && (
+                                    {combineDesc(p.desc, p.desc2) && (
                                       <div className="text-[10px] font-semibold text-[#000000]/60 mt-0.5">
-                                        {p.desc}
+                                        {combineDesc(p.desc, p.desc2)}
                                       </div>
                                     )}
                                     {p.hsnCode && (

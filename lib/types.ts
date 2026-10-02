@@ -8,6 +8,7 @@ export type Product = {
   id: string;
   name: string;
   description: string | null;
+  description2: string | null; // Optional second description; shown hyphen-joined with description
   category: string;
   gst_rate: number; // Default GST % for this product (editable at billing)
   low_stock_threshold: number;
@@ -72,7 +73,12 @@ export type OrderRow = {
   delivery_fee: number;
   grand_total: number; // = subtotal - discount + delivery
   cash_received: number;
-  payment_mode: PaymentMode;
+  payment_mode: PaymentMode; // primary mode; for a split this is the FIRST mode
+  // Split payment: when split_mode_2 is set, the bill was paid across two modes —
+  // payment_mode receives split_amount_1 and split_mode_2 receives split_amount_2.
+  split_mode_2: PaymentMode | null;
+  split_amount_1: number;
+  split_amount_2: number;
   bill_date: string;
   created_at: string;
 };
@@ -87,6 +93,10 @@ export type OrderItemRow = {
   snapshot_price: number;
   snapshot_serial: string | null; // IMEI / serial sold, frozen at time of sale
   quantity: number;
+  // Populated via JOIN for the invoice (not stored on the row itself).
+  batch_no?: string | null; // batch number of the batch this line was sold from
+  product_description?: string | null;
+  product_description2?: string | null;
 };
 
 // Free add-on given with a bill. Price is informational only — never part of

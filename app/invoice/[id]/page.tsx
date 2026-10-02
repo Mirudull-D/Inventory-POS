@@ -189,6 +189,12 @@ export default async function InvoicePage({
             customerPhone={order.customer_phone}
             grandTotal={grandTotalNum}
             isGst={order.is_gst}
+            initialPaper={
+              typeof resolvedSearchParams.paper === "string"
+                ? resolvedSearchParams.paper
+                : undefined
+            }
+            autoPrint={resolvedSearchParams.autoprint === "1"}
           />
         </div>
       )}
@@ -242,7 +248,10 @@ export default async function InvoicePage({
               <div>
                 <span className="text-zinc-400">Payment: </span>
                 <span className="text-zinc-800 font-medium uppercase">
-                  {order.payment_mode} • {order.status}
+                  {order.split_mode_2
+                    ? `${order.payment_mode} ₹${(Number(order.split_amount_1) || 0).toLocaleString("en-IN", { minimumFractionDigits: 2 })} + ${order.split_mode_2} ₹${(Number(order.split_amount_2) || 0).toLocaleString("en-IN", { minimumFractionDigits: 2 })}`
+                    : order.payment_mode}{" "}
+                  • {order.status}
                 </span>
               </div>
               <div>
@@ -315,6 +324,22 @@ export default async function InvoicePage({
                       <div className="font-medium text-zinc-900">
                         {item.snapshot_name}
                       </div>
+                      {[item.product_description, item.product_description2]
+                        .map((d) => (d || "").trim())
+                        .filter(Boolean)
+                        .join(" - ") && (
+                        <div className="text-[11px] text-zinc-500 mt-0.5">
+                          {[item.product_description, item.product_description2]
+                            .map((d) => (d || "").trim())
+                            .filter(Boolean)
+                            .join(" - ")}
+                        </div>
+                      )}
+                      {item.batch_no && (
+                        <div className="text-[11px] font-mono text-zinc-500 mt-0.5">
+                          Batch: {item.batch_no}
+                        </div>
+                      )}
                       {item.snapshot_serial && (
                         <div className="text-[11px] font-mono text-zinc-500 mt-0.5">
                           IMEI/SN: {item.snapshot_serial}
