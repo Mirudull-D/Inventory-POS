@@ -69,7 +69,7 @@ export type OrderRow = {
   discount_value: number;
   discount_amount: number;
   gst_percentage: number;
-  gst_amount: number; // GST inside subtotal-discount (derived)
+  gst_amount: number; // GST contained inside subtotal-discount (price is GST-inclusive, so it is never added on top)
   delivery_fee: number;
   grand_total: number; // = subtotal - discount + delivery
   cash_received: number;
@@ -92,6 +92,7 @@ export type OrderItemRow = {
   snapshot_name: string;
   snapshot_price: number;
   snapshot_serial: string | null; // IMEI / serial sold, frozen at time of sale
+  snapshot_gst_rate?: number | null; // GST % this line was sold at (price is GST-inclusive); null on old orders
   quantity: number;
   // Populated via JOIN for the invoice (not stored on the row itself).
   batch_no?: string | null; // batch number of the batch this line was sold from
@@ -150,6 +151,10 @@ export type AdvanceOrderRow = {
   notes: string | null;
   is_gst?: boolean;
   gst_percentage?: number | string;
+  // Discount given when the order was booked (already taken off total_amount).
+  discount_type?: 'PERCENT' | 'FIXED' | null;
+  discount_value?: number | string;
+  discount_amount?: number | string;
   finalized_order_id: string | null;
   finalized_at: string | null;
   cancelled_at: string | null;
@@ -181,6 +186,7 @@ export type CartItem = {
   serial?: string | null; // its IMEI / serial, for snapshotting
   name: string;
   desc: string;
-  price: number;
+  price: number; // GST-inclusive selling price
   qty: number;
+  gst_rate?: number; // GST % of the product (carved out of price on a GST invoice)
 };

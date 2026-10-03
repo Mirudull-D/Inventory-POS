@@ -19,6 +19,7 @@ import {
   AdvanceOrderStatus,
   AdvanceOrderWithRelations,
 } from './types';
+import { effectiveGstRate, gstInside } from './gst';
 
 // orders.bill_date is a Postgres DATE. The shop runs on India time, so turn whatever the client
 // sent (a plain YYYY-MM-DD, or a full ISO timestamp) into the IST calendar day. Casting a UTC ISO
@@ -514,6 +515,7 @@ export const dbStore = {
           snapshot_name: item.name,
           snapshot_price: item.price,
           snapshot_serial: item.serial ?? null,
+          snapshot_gst_rate: item.gst_rate ?? null,
           quantity: 1,
         });
         continue;
@@ -528,6 +530,7 @@ export const dbStore = {
           snapshot_name: item.name,
           snapshot_price: item.price,
           snapshot_serial: null,
+          snapshot_gst_rate: item.gst_rate ?? null,
           quantity: item.qty,
         });
         continue;
@@ -552,6 +555,7 @@ export const dbStore = {
           snapshot_name: item.name,
           snapshot_price: Number(batch.selling_price),
           snapshot_serial: null,
+          snapshot_gst_rate: item.gst_rate ?? null,
           quantity: take,
         });
 
@@ -567,13 +571,15 @@ export const dbStore = {
           snapshot_name: item.name,
           snapshot_price: item.price,
           snapshot_serial: null,
+          snapshot_gst_rate: item.gst_rate ?? null,
           quantity: remaining,
         });
       }
     }
 
-    // Subtotal is GST-inclusive (sum of line prices × qty).
-    // grand_total = subtotal - discount + delivery  (GST is embedded in subtotal).
+    // Prices are GST-inclusive, so subtotal is simply the sum of line prices × qty and
+    // grand_total = subtotal - discount + delivery. gst_amount is the GST already contained in
+    // that total (shown as CGST + SGST on the invoice) — it is never added on top.
     const subtotalInclusive = payload.grandTotal + payload.discountAmount - payload.deliveryFee;
 
     // Insert order & execute all batch stock deductions concurrently
@@ -604,10 +610,12 @@ export const dbStore = {
       ...finalOrderItems.map((oi) =>
         sql`
           INSERT INTO order_items (
-            id, order_id, product_id, batch_id, unit_id, snapshot_name, snapshot_price, snapshot_serial, quantity
+            id, order_id, product_id, batch_id, unit_id, snapshot_name, snapshot_price, snapshot_serial,
+            snapshot_gst_rate, quantity
           ) VALUES (
             ${uid()}, ${oi.order_id}, ${oi.product_id}, ${oi.batch_id}, ${oi.unit_id},
-            ${oi.snapshot_name}, ${oi.snapshot_price}, ${oi.snapshot_serial}, ${oi.quantity}
+            ${oi.snapshot_name}, ${oi.snapshot_price}, ${oi.snapshot_serial},
+            ${oi.snapshot_gst_rate ?? null}, ${oi.quantity}
           )
         `
       ),
@@ -682,6 +690,9 @@ export const dbStore = {
     notes: string | null;
     isGst?: boolean;
     gstPercentage?: number;
+    discountType?: 'PERCENT' | 'FIXED';
+    discountValue?: number;
+    discountAmount?: number;
     items: {
       product_id: string | null;
       snapshot_name: string;
@@ -699,12 +710,15 @@ export const dbStore = {
     await sql`
       INSERT INTO advance_orders (
         id, customer_id, customer_name, status, subtotal, total_amount, deposit_amount,
-        deposit_payment_mode, delivery_date, notes, is_gst, gst_percentage
+        deposit_payment_mode, delivery_date, notes, is_gst, gst_percentage,
+        discount_type, discount_value, discount_amount
       ) VALUES (
         ${payload.advanceOrderId}, ${customer.id}, ${payload.customerName}, 'PENDING',
         ${payload.subtotal}, ${payload.totalAmount}, ${payload.depositAmount},
         ${payload.depositPaymentMode}, ${payload.deliveryDate}, ${payload.notes},
-        ${Boolean(payload.isGst)}, ${payload.isGst ? payload.gstPercentage ?? 0 : 0}
+        ${Boolean(payload.isGst)}, ${payload.isGst ? payload.gstPercentage ?? 0 : 0},
+        ${(payload.discountAmount ?? 0) > 0 ? payload.discountType ?? 'FIXED' : null},
+        ${payload.discountValue ?? 0}, ${payload.discountAmount ?? 0}
       )
     `;
 
@@ -759,6 +773,17 @@ export const dbStore = {
     if (advance.status === 'COMPLETED') throw new Error('Advance order already finalized');
     if (advance.status === 'CANCELLED') throw new Error('Advance order was cancelled');
 
+    // Each product's own GST rate (saved with the product), so the invoice can split GST per rate.
+    // Custom lines with no product fall back to the rate chosen at collection.
+    const pct = payload.isGst ? payload.gstPercentage : 0;
+    const advProductIds = Array.from(
+      new Set(advance.items.filter((it) => it.product_id).map((it) => it.product_id as string)),
+    );
+    const rateRows = advProductIds.length
+      ? ((await sql`SELECT id, gst_rate FROM products WHERE id = ANY(${advProductIds})`) as { id: string; gst_rate: number | string }[])
+      : [];
+    const rateByProduct = new Map(rateRows.map((r) => [r.id, Number(r.gst_rate) || 0]));
+
     // Rebuild cart from the stored snapshot items.
     const cart: CartItem[] = advance.items.map((it) => ({
       id: it.id,
@@ -770,26 +795,34 @@ export const dbStore = {
       desc: it.snapshot_desc || '',
       price: Number(it.snapshot_price),
       qty: it.quantity,
+      gst_rate: payload.isGst ? (it.product_id ? rateByProduct.get(it.product_id) ?? pct : pct) : 0,
     }));
 
-    // Start from the total agreed when the order was booked (it already contains any GST added
-    // at booking, plus booking discount/delivery), then apply the discount given at collection.
+    // Start from the total agreed when the order was booked (booking discount/delivery included),
+    // then apply the discount given at collection. Prices are GST-inclusive: GST is never added
+    // on top, it is only the portion already contained in the agreed total.
     const agreedTotal = Number(advance.total_amount) || 0;
     const net = Math.max(0, agreedTotal - payload.discountAmount);
-    const pct = payload.isGst ? payload.gstPercentage : 0;
-    let gstAmount = 0;
-    let grandTotal = net;
-    if (payload.isGst && pct > 0) {
-      if (advance.is_gst) {
-        // Booked as GST: GST is already inside the agreed total — just show its portion.
-        gstAmount = net - net / (1 + pct / 100);
-      } else {
-        // Booked without GST but invoiced as GST now: GST is added ON TOP of the price.
-        gstAmount = (net * pct) / 100;
-        grandTotal = net + gstAmount;
-      }
+
+    // The discount given when the order was booked is already inside agreedTotal; carry it onto the
+    // invoice so the "Discount Applied" line shows (plus any discount given at collection).
+    const bookingDiscount = Number(advance.discount_amount) || 0;
+    const totalDiscount = bookingDiscount + payload.discountAmount;
+    let invoiceDiscountType: 'PERCENT' | 'FIXED' = payload.discountType;
+    let invoiceDiscountValue = payload.discountValue;
+    if (bookingDiscount > 0 && payload.discountAmount > 0) {
+      invoiceDiscountType = 'FIXED';
+      invoiceDiscountValue = totalDiscount;
+    } else if (bookingDiscount > 0) {
+      invoiceDiscountType = advance.discount_type === 'PERCENT' ? 'PERCENT' : 'FIXED';
+      invoiceDiscountValue = Number(advance.discount_value) || bookingDiscount;
     }
-    grandTotal += payload.deliveryFee;
+    // GST on the actual (pre-discount) line prices, summed per line at each product's own rate.
+    const linesTotal = cart.reduce((acc, c) => acc + c.price * c.qty, 0);
+    const gstAmount = payload.isGst
+      ? cart.reduce((acc, c) => acc + gstInside(c.price * c.qty, c.gst_rate ?? 0), 0)
+      : 0;
+    const grandTotal = net + payload.deliveryFee;
 
     const { orderId } = await this.submitOrder({
       orderId: payload.invoiceId,
@@ -800,10 +833,10 @@ export const dbStore = {
       isGst: payload.isGst,
       billDate: payload.billDate,
       items: cart,
-      discountType: payload.discountType,
-      discountValue: payload.discountValue,
-      discountAmount: payload.discountAmount,
-      gstPercentage: payload.isGst ? payload.gstPercentage : 0,
+      discountType: invoiceDiscountType,
+      discountValue: invoiceDiscountValue,
+      discountAmount: totalDiscount,
+      gstPercentage: effectiveGstRate(linesTotal, gstAmount),
       gstAmount,
       deliveryFee: payload.deliveryFee,
       grandTotal,

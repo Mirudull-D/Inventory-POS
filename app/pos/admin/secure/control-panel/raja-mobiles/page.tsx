@@ -80,6 +80,7 @@ import {
   setAdvanceOrderStatus,
 } from "@/app/pos/actions";
 import { ProductWithBatches, ProductBatch, ProductUnit, CartItem, Expense, Category, AdvanceOrderWithRelations, AdvanceOrderStatus } from "@/lib/types";
+import { effectiveGstRate, gstInside, isLegacyAddedGst } from "@/lib/gst";
 
 // Preset expense categories (users can also type a custom one)
 const EXPENSE_CATEGORIES = [
@@ -476,8 +477,6 @@ export default function POSBilling() {
 
   const [selectedAdvance, setSelectedAdvance] = useState<AdvanceOrderWithRelations | null>(null);
   const [advanceViewMode, setAdvanceViewMode] = useState<"view" | "receive" | null>(null);
-  const [receiveDiscountType, setReceiveDiscountType] = useState<"FIXED" | "PERCENT">("FIXED");
-  const [receiveDiscountValue, setReceiveDiscountValue] = useState<number | "">("");
   const [receivePaymentMode, setReceivePaymentMode] = useState<OrderPaymentMode>("CASH");
   const [receiveIsGst, setReceiveIsGst] = useState(false);
   const [receiveGstPct, setReceiveGstPct] = useState<number>(18);
@@ -1338,31 +1337,42 @@ export default function POSBilling() {
     setCatalog((prev) => prev.filter((c) => c.id !== id));
   };
 
+  // Orders saved before GST became inclusive have the GST added on top of the item prices.
+  const selectedOrderLegacyGst = selectedOrder
+    ? isLegacyAddedGst({
+        isGst: selectedOrder.isGst,
+        subtotal: selectedOrder.subtotal,
+        gstAmount: selectedOrder.gstAmount ?? 0,
+        itemsTotal: selectedOrder.items.reduce((acc, i) => acc + (Number(i.price) || 0) * (Number(i.qty) || 0), 0),
+      })
+    : false;
+
   // Product prices are GST-inclusive. Subtotal already contains GST; we back-derive
-  // the GST portion for display and never add it on top of the grand total.
+  // the GST portion for display (CGST + SGST on the invoice) and never add it on top of the total.
   const subtotal = items.reduce((acc, item) => acc + item.price * item.qty, 0);
   const calculatedDiscount =
     discountType === "percent"
       ? subtotal * (discountValue / 100)
       : discountValue;
   const netInclusive = Math.max(0, subtotal - calculatedDiscount);
-  // GST is per product and added ON TOP of the price (in rupees). Each product uses its own
-  // saved GST rate (custom items fall back to the default rate). Discount reduces the taxable value.
-  const itemGstRate = (item: OrderItem): number => {
+  // GST is per product and INCLUDED in the price: GST = line − line ÷ (1 + rate/100). Each product
+  // uses its own saved GST rate (custom items fall back to the default rate). GST is worked out on the
+  // ACTUAL (pre-discount) price — a discount lowers what the customer pays, not the GST shown.
+  const itemGstRate = (item: OrderItem, fallbackRate: number = gstPercentage): number => {
     const cat = catalog.find(
       (c) =>
         (item.product_id && (c.id === item.product_id || c.productId === item.product_id)) ||
         (item.name && c.name.trim().toLowerCase() === item.name.trim().toLowerCase()),
     );
-    return typeof cat?.gstRate === "number" ? cat.gstRate : gstPercentage;
+    return typeof cat?.gstRate === "number" ? cat.gstRate : fallbackRate;
   };
   const itemGstAmount = (item: OrderItem): number => {
     if (!applyGST) return 0;
-    const discountFactor = subtotal > 0 ? netInclusive / subtotal : 0;
-    return (item.price * item.qty * itemGstRate(item) / 100) * discountFactor;
+    return gstInside(item.price * item.qty, itemGstRate(item));
   };
   const gstAmount = applyGST ? items.reduce((acc, i) => acc + itemGstAmount(i), 0) : 0;
-  const grandTotal = netInclusive + gstAmount + deliveryFee;
+  // GST is already inside the prices, so the payable total never changes with the GST toggle.
+  const grandTotal = netInclusive + deliveryFee;
 
   // Suggest a GST % from the products currently in the cart (their per-product
   // default rate). Used to pre-fill the changeable GST field when a GST invoice
@@ -1459,12 +1469,12 @@ export default function POSBilling() {
         deliveryDate: advDeliveryDate || null,
         notes: advNotes.trim() || null,
         // Remember the GST choice so collecting the balance later produces a GST invoice too.
-        // The effective rate = GST ₹ ÷ taxable value, so the later inclusive math returns the same GST ₹.
+        // Blended GST rate of the cart; the products' own rates are looked up again when the balance is collected.
         isGst: applyGST,
-        gstPercentage:
-          applyGST && netInclusive > 0
-            ? Math.round((gstAmount / netInclusive) * 10000) / 100
-            : 0,
+        gstPercentage: applyGST ? effectiveGstRate(subtotal, gstAmount) : 0,
+        discountType: discountType === "percent" ? "PERCENT" : "FIXED",
+        discountValue: discountValue,
+        discountAmount: calculatedDiscount,
         items: items.map((i) => ({
           product_id: i.product_id || null,
           snapshot_name: i.name,
@@ -1507,8 +1517,6 @@ export default function POSBilling() {
   const openReceiveBalance = (adv: AdvanceOrderWithRelations) => {
     setSelectedAdvance(adv);
     setAdvanceViewMode("receive");
-    setReceiveDiscountType("FIXED");
-    setReceiveDiscountValue("");
     setReceivePaymentMode("CASH");
     // Default to however the advance order was booked (GST or Non-GST).
     setReceiveIsGst(Boolean(adv.is_gst));
@@ -1549,32 +1557,17 @@ export default function POSBilling() {
   const balanceRemaining = (adv: AdvanceOrderWithRelations) =>
     Math.max(0, Number(adv.total_amount) - Number(adv.deposit_amount));
 
-  const receiveBalanceDiscountAmount = (() => {
-    if (!selectedAdvance) return 0;
-    const base = balanceRemaining(selectedAdvance);
-    const val = Number(receiveDiscountValue) || 0;
-    return receiveDiscountType === "PERCENT" ? base * (val / 100) : val;
-  })();
+  // Advance orders have no discount at collection time — the only discount is the one given when the
+  // order was booked, which is already taken off total_amount and carried onto the invoice.
 
-  // GST added now: only when the order was booked WITHOUT GST but is invoiced as GST (added on top).
-  // If it was booked as GST, the GST is already inside the agreed total.
-  const receiveExtraGst = (() => {
-    if (!selectedAdvance || !receiveIsGst || selectedAdvance.is_gst) return 0;
-    const net = Math.max(0, Number(selectedAdvance.total_amount) - receiveBalanceDiscountAmount);
-    return (net * (Number(receiveGstPct) || 0)) / 100;
-  })();
-
+  // Prices are GST-inclusive: choosing a GST invoice never changes the amount to collect.
   const receiveBalanceFinalAmount = (() => {
     if (!selectedAdvance) return 0;
-    return Math.max(0, balanceRemaining(selectedAdvance) - receiveBalanceDiscountAmount) + receiveExtraGst;
+    return balanceRemaining(selectedAdvance);
   })();
 
   const confirmReceiveBalance = async () => {
     if (!selectedAdvance || isFinalizing) return;
-    if (receiveBalanceDiscountAmount > balanceRemaining(selectedAdvance)) {
-      alert("Discount cannot exceed the remaining balance.");
-      return;
-    }
     setIsFinalizing(true);
     try {
       const invoiceId = `INV-${new Date().getFullYear()}-${Math.random().toString(36).substr(2, 5).toUpperCase()}`;
@@ -1583,23 +1576,31 @@ export default function POSBilling() {
         invoiceId,
         isGst: receiveIsGst,
         gstPercentage: receiveIsGst ? receiveGstPct : 0,
-        discountType: receiveDiscountType,
-        discountValue: Number(receiveDiscountValue) || 0,
-        discountAmount: receiveBalanceDiscountAmount,
+        discountType: "FIXED",
+        discountValue: 0,
+        discountAmount: 0,
         deliveryFee: 0,
         paymentMode: receivePaymentMode,
         billDate: localDateStr(),
       });
       const adv = selectedAdvance;
-      const rawSubtotal = Number(adv.total_amount) || 0;
-      const netInclusive = Math.max(0, rawSubtotal - receiveBalanceDiscountAmount);
-      const gstAmt =
-        receiveIsGst && receiveGstPct > 0
-          ? adv.is_gst
-            ? netInclusive - netInclusive / (1 + receiveGstPct / 100)
-            : receiveExtraGst
-          : 0;
-      const finalGrandTotal = netInclusive + (adv.is_gst ? 0 : receiveExtraGst);
+      // total_amount is already net of the booking discount; subtotal is the pre-discount amount.
+      const netInclusive = Number(adv.total_amount) || 0;
+      const bookingDiscount = Number(adv.discount_amount) || 0;
+      const rawSubtotal = netInclusive + bookingDiscount;
+      // GST on the actual (pre-discount) line prices, per line at each product's own rate.
+      const gstAmt = receiveIsGst
+        ? adv.items.reduce(
+            (acc, i) =>
+              acc +
+              gstInside(
+                (Number(i.snapshot_price) || 0) * (Number(i.quantity) || 0),
+                itemGstRate({ product_id: i.product_id, name: i.snapshot_name } as OrderItem, receiveGstPct),
+              ),
+            0,
+          )
+        : 0;
+      const finalGrandTotal = netInclusive;
       const nowIso = new Date().toISOString();
       const finalOrder: CompletedOrder = {
         id: invoiceId,
@@ -1616,10 +1617,10 @@ export default function POSBilling() {
           qty: Number(i.quantity) || 0,
         })),
         subtotal: rawSubtotal,
-        discount: receiveBalanceDiscountAmount,
-        discountType: receiveDiscountType,
-        discountValue: Number(receiveDiscountValue) || 0,
-        gstPercentage: receiveIsGst ? receiveGstPct : 0,
+        discount: bookingDiscount,
+        discountType: adv.discount_type === "PERCENT" ? "PERCENT" : "FIXED",
+        discountValue: Number(adv.discount_value) || undefined,
+        gstPercentage: receiveIsGst ? effectiveGstRate(rawSubtotal, gstAmt) : 0,
         gstAmount: gstAmt,
         deliveryFee: 0,
         grandTotal: finalGrandTotal,
@@ -1725,20 +1726,19 @@ export default function POSBilling() {
       discountType === "percent"
         ? localSubtotal * (discountValue / 100)
         : discountValue;
-    // Per-product GST (in rupees) is added on top of the discounted item total.
+    // Per-product GST is INCLUDED in the price — it is carved out of the ACTUAL (pre-discount) price for
+    // the invoice, never added on top, so the grand total is the same with or without GST.
     const localNetInclusive = Math.max(0, localSubtotal - localCalculatedDiscount);
-    const localDiscountFactor = localSubtotal > 0 ? localNetInclusive / localSubtotal : 0;
     const localGstAmount = applyGST
       ? itemsToSave.reduce(
-          (acc, i) => acc + (i.price * i.qty * itemGstRate(i) / 100) * localDiscountFactor,
+          (acc, i) => acc + gstInside(i.price * i.qty, itemGstRate(i)),
           0,
         )
       : 0;
-    const localEffectiveGstPct =
-      applyGST && localNetInclusive > 0
-        ? Math.round((localGstAmount / localNetInclusive) * 10000) / 100
-        : 0;
-    const localGrandTotal = localNetInclusive + localGstAmount + deliveryFee;
+    const localEffectiveGstPct = applyGST
+      ? effectiveGstRate(localSubtotal, localGstAmount)
+      : 0;
+    const localGrandTotal = localNetInclusive + deliveryFee;
 
     // Validate totals against PostgreSQL numeric(10,2) overflow limit (99,999,999.99)
     const MAX_LIMIT = 99999999.99;
@@ -1826,6 +1826,7 @@ export default function POSBilling() {
           desc: i.desc,
           price: i.price,
           qty: i.qty,
+          gst_rate: itemGstRate(i),
         })),
         discountType: discountType === "percent" ? "PERCENT" : "FIXED",
         discountValue: discountValue,
@@ -1981,16 +1982,28 @@ export default function POSBilling() {
     let message = `${shopEmoji} *RAJA MOBILES* ${shopEmoji}\n\n`;
     message += `${checkEmoji} Here are your ${order.isGst ? "GST invoice" : "bill"} details!\n\n`;
 
-    // Stored subtotal contains the GST; show the price before GST, then GST as its own line.
+    // Prices are GST-inclusive: the item prices already contain the GST, which is only listed as
+    // CGST + SGST. Orders saved before that change stored the GST added on top — keep their layout.
     const gstInsideBill = Number(order.gstAmount) || 0;
     const showGst = order.isGst && gstInsideBill > 0.1;
-    message += `Subtotal${showGst ? " (before GST)" : ""}: ₹${(order.subtotal - (showGst ? gstInsideBill : 0)).toLocaleString(undefined, { minimumFractionDigits: 2 })}\n`;
+    const legacyAdded = isLegacyAddedGst({
+      isGst: order.isGst,
+      subtotal: order.subtotal,
+      gstAmount: gstInsideBill,
+      itemsTotal: order.items.reduce((acc, i) => acc + (Number(i.price) || 0) * (Number(i.qty) || 0), 0),
+    });
+    message += `Subtotal${legacyAdded ? " (before GST)" : ""}: ₹${(order.subtotal - (legacyAdded ? gstInsideBill : 0)).toLocaleString(undefined, { minimumFractionDigits: 2 })}\n`;
     if (order.discount > 0) {
       message += `Discount Applied: -₹${order.discount.toLocaleString(undefined, { minimumFractionDigits: 2 })}\n`;
     }
-    if (showGst) {
+    if (showGst && legacyAdded) {
       const gstLabel = order.gstPercentage ? `GST (${order.gstPercentage}%)` : "GST";
       message += `${gstLabel}: +₹${gstInsideBill.toLocaleString(undefined, { minimumFractionDigits: 2 })}\n`;
+    } else if (showGst) {
+      const half = (order.gstPercentage || 0) / 2;
+      const halfAmt = (gstInsideBill / 2).toLocaleString(undefined, { minimumFractionDigits: 2 });
+      message += `CGST (${half}%) included: ₹${halfAmt}\n`;
+      message += `SGST (${half}%) included: ₹${halfAmt}\n`;
     }
 
     if (order.deliveryFee > 0) {
@@ -3420,7 +3433,7 @@ export default function POSBilling() {
 
                 <div>
                   <label className="block text-[10px] font-bold text-gray-600 uppercase tracking-widest mb-1.5">
-                    Selling Price (₹) <span className="text-[#3F3F46]">*</span>
+                    Selling Price (₹, incl. GST) <span className="text-[#3F3F46]">*</span>
                   </label>
                   <input
                     type="number"
@@ -3456,7 +3469,7 @@ export default function POSBilling() {
                     }
                   />
                   <p className="text-[9px] text-gray-400 font-semibold mt-1">
-                    Pre-fills at billing (still editable there)
+                    Price above already includes this GST — shown as CGST + SGST on the invoice
                   </p>
                 </div>
               </div>
@@ -3623,7 +3636,7 @@ export default function POSBilling() {
                 </div>
                 <div>
                   <label className="block text-[10px] font-bold text-gray-600 uppercase tracking-widest mb-1.5">
-                    Selling Price (₹)
+                    Selling Price (₹, incl. GST)
                   </label>
                   <input
                     type="number"
@@ -4394,7 +4407,7 @@ export default function POSBilling() {
                                     <div className="flex items-center justify-between gap-2">
                                       <input
                                         type="text"
-                                        placeholder="Search catalog items..."
+                                        placeholder="Search by IMEI, name or description..."
                                         className="w-full bg-white border border-black/10 focus:border-[#3F3F46] rounded-md px-3 py-1.5 text-xs font-semibold focus:outline-none transition-colors"
                                         value={catalogSearch}
                                         onChange={(e) =>
@@ -4428,35 +4441,56 @@ export default function POSBilling() {
                                   </div>
                                   <div className="max-h-48 overflow-y-auto">
                                     {(() => {
-                                      const list = catalog.filter(
-                                        (c) =>
-                                          (activeCategory === "ALL" ||
-                                            (c.category || "General") ===
-                                              activeCategory) &&
-                                          (c.name
+                                      const q = catalogSearch.toLowerCase();
+                                      // One row per sellable unit: serialized products (phones) are listed
+                                      // by IMEI so the IMEI comes first, followed by the description.
+                                      // Accessories (no IMEI) stay one row per product.
+                                      const rows = catalog.flatMap((c) => {
+                                        if (
+                                          activeCategory !== "ALL" &&
+                                          (c.category || "General") !== activeCategory
+                                        )
+                                          return [];
+                                        const textMatch =
+                                          c.name.toLowerCase().includes(q) ||
+                                          combineDesc(c.desc, c.desc2)
                                             .toLowerCase()
-                                            .includes(
-                                              catalogSearch.toLowerCase(),
-                                            ) ||
-                                            combineDesc(c.desc, c.desc2)
-                                              .toLowerCase()
-                                              .includes(
-                                                catalogSearch.toLowerCase(),
-                                              ) ||
-                                            (c.batchNo || "")
-                                              .toLowerCase()
-                                              .includes(
-                                                catalogSearch.toLowerCase(),
-                                              )),
-                                      );
-                                      return list.length > 0 ? (
-                                        list.map((catItem) => {
+                                            .includes(q) ||
+                                          (c.batchNo || "").toLowerCase().includes(q);
+                                        const units = c.availableUnits || [];
+                                        if (c.tracksSerial && units.length > 0) {
+                                          return units
+                                            .filter(
+                                              (u) =>
+                                                textMatch ||
+                                                u.serial.toLowerCase().includes(q),
+                                            )
+                                            .map((u) => ({ cat: c, unit: u }));
+                                        }
+                                        return textMatch
+                                          ? [{ cat: c, unit: null as ProductUnit | null }]
+                                          : [];
+                                      });
+                                      return rows.length > 0 ? (
+                                        rows.map(({ cat: catItem, unit }) => {
                                           const isOutOfStock =
                                             catItem.stockQuantity === 0;
+                                          const desc = combineDesc(
+                                            catItem.desc,
+                                            catItem.desc2,
+                                          );
+                                          // Price of the batch this IMEI belongs to (falls back to the product price).
+                                          const unitPrice = unit
+                                            ? Number(
+                                                catItem.batches?.find(
+                                                  (b) => b.id === unit.batch_id,
+                                                )?.selling_price,
+                                              ) || catItem.price
+                                            : catItem.price;
                                           return (
                                             <div
-                                              key={catItem.id}
-                                              className={`w-full flex items-center border-b border-transparent last:border-0 hover:bg-[#FFFFFF] transition-colors ${
+                                              key={unit ? unit.id : catItem.id}
+                                              className={`w-full flex items-center border-b border-black/5 last:border-0 hover:bg-[#F4F4F5] transition-colors ${
                                                 isOutOfStock ? "opacity-50" : ""
                                               }`}
                                             >
@@ -4476,7 +4510,7 @@ export default function POSBilling() {
                                                   updateItem(
                                                     item.id,
                                                     "desc",
-                                                    combineDesc(catItem.desc, catItem.desc2),
+                                                    desc,
                                                   );
                                                   updateItem(
                                                     item.id,
@@ -4484,21 +4518,22 @@ export default function POSBilling() {
                                                     catItem.productId ||
                                                       catItem.id,
                                                   );
-                                                  // Reset any prior serialized-unit selection.
+                                                  // An IMEI row selects that exact unit; a product row
+                                                  // clears any prior unit (IMEI is then picked below).
                                                   updateItem(
                                                     item.id,
                                                     "unit_id",
-                                                    null,
+                                                    unit ? unit.id : null,
                                                   );
                                                   updateItem(
                                                     item.id,
                                                     "serial",
-                                                    null,
+                                                    unit ? unit.serial : null,
                                                   );
                                                   updateItem(
                                                     item.id,
                                                     "batch_id",
-                                                    null,
+                                                    unit ? unit.batch_id : null,
                                                   );
                                                   if (catItem.tracksSerial) {
                                                     updateItem(
@@ -4507,48 +4542,73 @@ export default function POSBilling() {
                                                       1,
                                                     );
                                                   }
-                                                  if (
-                                                    catItem.price !== undefined
-                                                  ) {
+                                                  if (unitPrice !== undefined) {
                                                     updateItem(
                                                       item.id,
                                                       "price",
-                                                      catItem.price,
+                                                      unitPrice,
                                                     );
                                                   }
                                                   setActiveCatalogRowId(null);
                                                 }}
                                               >
-                                                <div className="flex justify-between items-center w-full">
-                                                  <span className="text-xs font-bold text-[#000000]">
-                                                    {catItem.name}
-                                                  </span>
-                                                  <span
-                                                    className={`text-[10px] font-bold ${isOutOfStock ? "text-[#27272A]" : "text-green-600"}`}
-                                                  >
-                                                    {isOutOfStock
-                                                      ? "Out of Stock"
-                                                      : `Stock: ${catItem.stockQuantity}`}
-                                                  </span>
-                                                </div>
-                                                {combineDesc(catItem.desc, catItem.desc2) && (
-                                                  <span className="text-[10px] font-semibold uppercase tracking-wider text-[#000000] mt-0.5">
-                                                    {combineDesc(catItem.desc, catItem.desc2)}
-                                                  </span>
+                                                {unit ? (
+                                                  <>
+                                                    {/* IMEI first … */}
+                                                    <div className="flex justify-between items-center w-full gap-2">
+                                                      <span className="text-xs font-black text-[#000000] font-mono tracking-wide">
+                                                        IMEI: {unit.serial}
+                                                      </span>
+                                                      {unitPrice !== undefined && (
+                                                        <span className="text-[10px] font-bold text-[#3F3F46]">
+                                                          ₹{unitPrice}
+                                                        </span>
+                                                      )}
+                                                    </div>
+                                                    {/* … then the description */}
+                                                    <span className="text-[11px] font-bold text-[#000000] mt-0.5">
+                                                      {catItem.name}
+                                                    </span>
+                                                    {desc && (
+                                                      <span className="text-[10px] font-semibold uppercase tracking-wider text-[#000000]">
+                                                        {desc}
+                                                      </span>
+                                                    )}
+                                                  </>
+                                                ) : (
+                                                  <>
+                                                    <div className="flex justify-between items-center w-full">
+                                                      <span className="text-xs font-bold text-[#000000]">
+                                                        {catItem.name}
+                                                      </span>
+                                                      <span
+                                                        className={`text-[10px] font-bold ${isOutOfStock ? "text-[#27272A]" : "text-green-600"}`}
+                                                      >
+                                                        {isOutOfStock
+                                                          ? "Out of Stock"
+                                                          : `Stock: ${catItem.stockQuantity}`}
+                                                      </span>
+                                                    </div>
+                                                    {desc && (
+                                                      <span className="text-[10px] font-semibold uppercase tracking-wider text-[#000000] mt-0.5">
+                                                        {desc}
+                                                      </span>
+                                                    )}
+                                                    <div className="flex items-center gap-2 mt-0.5">
+                                                      {catItem.price !==
+                                                        undefined && (
+                                                        <span className="text-[10px] font-bold text-[#3F3F46]">
+                                                          ₹{catItem.price}
+                                                        </span>
+                                                      )}
+                                                      {catItem.batchNo && (
+                                                        <span className="text-[10px] font-bold text-[#3F3F46]/70">
+                                                          • Batch: {catItem.batchNo}
+                                                        </span>
+                                                      )}
+                                                    </div>
+                                                  </>
                                                 )}
-                                                <div className="flex items-center gap-2 mt-0.5">
-                                                  {catItem.price !==
-                                                    undefined && (
-                                                    <span className="text-[10px] font-bold text-[#3F3F46]">
-                                                      ₹{catItem.price}
-                                                    </span>
-                                                  )}
-                                                  {catItem.batchNo && (
-                                                    <span className="text-[10px] font-bold text-[#3F3F46]/70">
-                                                      • Batch: {catItem.batchNo}
-                                                    </span>
-                                                  )}
-                                                </div>
                                               </button>
                                               <div className="flex shrink-0">
                                                 <button
@@ -4671,13 +4731,10 @@ export default function POSBilling() {
                                 {itemGstRate(item)}%
                               </div>
 
-                              {/* Line total on the right, with that line's GST in ₹ underneath */}
+                              {/* Line total on the right */}
                               <div className="col-span-3 sm:col-span-2 order-last sm:order-none text-right pr-1 select-none">
                                 <div className="text-sm font-black text-[#000000]">
                                   ₹{(item.price * item.qty).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                                </div>
-                                <div className={`text-[10px] font-bold text-[#3F3F46] transition-all ${applyGST ? "" : "opacity-40 blur-[1.5px]"}`}>
-                                  GST ₹{itemGstAmount(item).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                                 </div>
                               </div>
 
@@ -4924,19 +4981,6 @@ export default function POSBilling() {
                               GST Invoice
                             </button>
                           </div>
-                          {applyGST && (
-                            <div className="flex justify-between items-center">
-                              <span className="text-xs font-bold text-[#000000] uppercase tracking-wider">
-                                GST <span className="text-[9px] font-bold text-[#52525B]">(added, per product)</span>
-                              </span>
-                              <span className="text-xs font-bold text-[#3F3F46] text-right">
-                                +₹
-                                {gstAmount.toLocaleString(undefined, {
-                                  minimumFractionDigits: 2,
-                                })}
-                              </span>
-                            </div>
-                          )}
                         </div>
                       </div>
 
@@ -5442,6 +5486,16 @@ export default function POSBilling() {
                   ))}
                 </div>
 
+                {Number(selectedAdvance.discount_amount) > 0 && (
+                  <div className="flex justify-between items-center bg-[#FEF3C7] border border-[#F59E0B]/30 rounded-lg px-3 py-2 text-xs font-black text-[#78350F]">
+                    <span>
+                      Discount applied
+                      {selectedAdvance.discount_type === "PERCENT" && Number(selectedAdvance.discount_value) ? ` (${Number(selectedAdvance.discount_value)}%)` : ""}
+                    </span>
+                    <span>−₹{Number(selectedAdvance.discount_amount).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                  </div>
+                )}
+
                 <div className="grid grid-cols-3 gap-2 text-center">
                   <div className="bg-[#F4F4F5] border border-black/10 rounded-lg p-2.5">
                     <p className="text-[9px] font-bold text-[#52525B] uppercase tracking-wider">Total</p>
@@ -5469,28 +5523,6 @@ export default function POSBilling() {
                 {/* Receive-payment specific fields */}
                 {advanceViewMode === "receive" && selectedAdvance.status !== "COMPLETED" && selectedAdvance.status !== "CANCELLED" && (
                   <div className="pt-3 border-t border-black/10 space-y-3">
-                    <div>
-                      <label className="block text-[10px] font-bold text-[#000000] uppercase tracking-wider mb-1.5">Manual Discount</label>
-                      <div className="flex gap-2">
-                        <select
-                          value={receiveDiscountType}
-                          onChange={(e) => setReceiveDiscountType(e.target.value as "FIXED" | "PERCENT")}
-                          className="bg-white border border-black/15 rounded-lg px-2 py-2 text-xs font-bold focus:outline-none"
-                        >
-                          <option value="FIXED">₹</option>
-                          <option value="PERCENT">%</option>
-                        </select>
-                        <input
-                          type="number"
-                          value={receiveDiscountValue}
-                          onChange={(e) => setReceiveDiscountValue(e.target.value === "" ? "" : parseFloat(e.target.value))}
-                          onWheel={(e) => e.currentTarget.blur()}
-                          className="flex-1 bg-white border border-black/15 focus:border-[#3F3F46] rounded-lg px-3 py-2 text-sm font-bold focus:outline-none"
-                          placeholder="0"
-                        />
-                      </div>
-                    </div>
-
                     <div>
                       <label className="block text-[10px] font-bold text-[#000000] uppercase tracking-wider mb-1.5">Payment Method</label>
                       <div className="grid grid-cols-3 gap-1.5">
@@ -5535,7 +5567,7 @@ export default function POSBilling() {
                     </div>
 
                     <p className="text-[10px] font-bold text-[#78350F] bg-[#FEF3C7] border border-[#F59E0B]/30 rounded-lg p-2.5">
-                      Confirmation marks the order Completed, creates one official invoice, and recognizes the full ₹{Number(selectedAdvance.total_amount - receiveBalanceDiscountAmount + receiveExtraGst).toLocaleString(undefined, { minimumFractionDigits: 2 })} as revenue.
+                      Confirmation marks the order Completed, creates one official invoice, and recognizes the full ₹{Number(selectedAdvance.total_amount).toLocaleString(undefined, { minimumFractionDigits: 2 })} as revenue.
                     </p>
 
                     <button
@@ -5741,6 +5773,12 @@ export default function POSBilling() {
                       </div>
                       <div className="text-[11px]">
                         <p className="font-bold text-black">Total: ₹{Number(a.total_amount).toLocaleString(undefined, { minimumFractionDigits: 2 })}</p>
+                        {Number(a.discount_amount) > 0 && (
+                          <p className="text-[#B45309] font-black">
+                            Discount applied: −₹{Number(a.discount_amount).toLocaleString(undefined, { maximumFractionDigits: 2 })}
+                            {a.discount_type === "PERCENT" && Number(a.discount_value) ? ` (${Number(a.discount_value)}%)` : ""}
+                          </p>
+                        )}
                         <p className="text-[#16A34A] font-bold">Paid: ₹{Number(a.deposit_amount).toLocaleString(undefined, { minimumFractionDigits: 2 })}</p>
                         <p className="text-[#DC2626] font-bold">Balance: ₹{bal.toLocaleString(undefined, { minimumFractionDigits: 2 })}</p>
                       </div>
@@ -6173,6 +6211,12 @@ export default function POSBilling() {
                               </td>
                               <td className="p-4 text-sm font-black text-[#3F3F46]">
                                 ₹{order.grandTotal.toLocaleString()}
+                                {order.discount > 0 && (
+                                  <span className="block text-[10px] font-black text-[#B45309] mt-0.5">
+                                    Discount applied: −₹{order.discount.toLocaleString(undefined, { maximumFractionDigits: 2 })}
+                                    {order.discountType === "PERCENT" && order.discountValue ? ` (${order.discountValue}%)` : ""}
+                                  </span>
+                                )}
                                 <span className={`block text-[9px] font-bold mt-0.5 ${order.splitMode2 ? "text-[#B45309]" : "text-black/50"}`}>
                                   {order.splitMode2 ? "⇄ " : ""}{paymentSummary(order)}
                                 </span>
@@ -8869,23 +8913,23 @@ export default function POSBilling() {
                 <div className="border-t border-black/10 pt-4 space-y-2">
                   <div className="flex justify-between text-sm">
                     <span className="text-[#000000] font-semibold">
-                      Subtotal{selectedOrder.isGst && (selectedOrder.gstAmount ?? 0) > 0 ? " (before GST)" : ""}
+                      Subtotal{selectedOrderLegacyGst ? " (before GST)" : ""}
                     </span>
                     <span className="text-[#000000] font-bold">
-                      ₹{(selectedOrder.subtotal - (selectedOrder.isGst ? selectedOrder.gstAmount ?? 0 : 0)).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      ₹{(selectedOrder.subtotal - (selectedOrderLegacyGst ? selectedOrder.gstAmount ?? 0 : 0)).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                     </span>
                   </div>
                   {selectedOrder.discount > 0 && (
                     <div className="flex justify-between text-sm">
                       <span className="text-[#000000] font-semibold">
-                        Discount
+                        Discount Applied{selectedOrder.discountType === "PERCENT" && selectedOrder.discountValue ? ` (${selectedOrder.discountValue}%)` : ""}
                       </span>
                       <span className="text-[#27272A] font-bold">
                         -₹{selectedOrder.discount.toLocaleString()}
                       </span>
                     </div>
                   )}
-                  {(selectedOrder.gstAmount ?? 0) > 0 && (
+                  {(selectedOrder.gstAmount ?? 0) > 0 && selectedOrderLegacyGst && (
                     <div className="flex justify-between text-sm">
                       <span className="text-[#000000] font-semibold">
                         GST ({selectedOrder.gstPercentage ?? 0}%)
@@ -8895,6 +8939,17 @@ export default function POSBilling() {
                       </span>
                     </div>
                   )}
+                  {selectedOrder.isGst && (selectedOrder.gstAmount ?? 0) > 0 && !selectedOrderLegacyGst &&
+                    (["CGST", "SGST"] as const).map((tax) => (
+                      <div key={tax} className="flex justify-between text-sm">
+                        <span className="text-[#000000] font-semibold">
+                          {tax} ({(selectedOrder.gstPercentage ?? 0) / 2}%) <span className="text-[10px] text-[#52525B]">included</span>
+                        </span>
+                        <span className="text-[#000000] font-bold">
+                          ₹{((selectedOrder.gstAmount ?? 0) / 2).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        </span>
+                      </div>
+                    ))}
                   {selectedOrder.deliveryFee > 0 && (
                     <div className="flex justify-between text-sm">
                       <span className="text-[#000000] font-semibold">
