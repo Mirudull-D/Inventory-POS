@@ -2,6 +2,7 @@ import { dbStore } from "@/lib/dbStore";
 import { ArrowLeft, FileText } from "lucide-react";
 import Link from "next/link";
 import { InvoiceActions } from "./InvoiceActions";
+import { gstByRate, isLegacyAddedGst } from "@/lib/gst";
 
 // Clean Indian Number-to-Words Converter
 function numberToWords(num: number): string {
@@ -132,6 +133,38 @@ export default async function InvoicePage({
   const halfGstRate = order.gst_percentage ? order.gst_percentage / 2 : 9;
   const halfGstAmount = gstAmountNum > 0 ? gstAmountNum / 2 : 0;
 
+  // Prices are GST-inclusive. On a GST invoice the line prices and the total stay exactly as
+  // entered; the GST contained in them is listed as CGST + SGST (half of each rate), per rate.
+  // Orders saved before this change had the GST added on top of the prices — keep their layout.
+  const itemsTotal = order.items.reduce(
+    (acc, i) => acc + (Number(i.snapshot_price) || 0) * i.quantity,
+    0,
+  );
+  const legacyAddedGst = isLegacyAddedGst({
+    isGst: order.is_gst,
+    subtotal: subtotalNum,
+    gstAmount: gstAmountNum,
+    itemsTotal,
+  });
+  // Every bill made with the GST toggle lists CGST + SGST (even at 0% when the product has no GST rate saved).
+  const showIncludedGst = order.is_gst && !legacyAddedGst;
+  const fallbackRate = Number(order.gst_percentage) || 0;
+  // GST is worked out on the actual (pre-discount) item prices; the discount only lowers what is paid.
+  let gstRateRows = gstByRate(
+    order.items.map((i) => ({
+      price: Number(i.snapshot_price) || 0,
+      qty: i.quantity,
+      rate:
+        i.snapshot_gst_rate != null ? Number(i.snapshot_gst_rate) : fallbackRate,
+    })),
+  );
+  if (showIncludedGst && gstRateRows.length === 0) {
+    gstRateRows = [{ rate: fallbackRate, gst: gstAmountNum }];
+  }
+  const fmtRate = (r: number) => Number((r / 2).toFixed(2));
+  const money = (n: number) =>
+    n.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
   const formattedDate = new Date(order.bill_date).toLocaleDateString("en-IN", {
     day: "2-digit",
     month: "short",
@@ -154,6 +187,17 @@ export default async function InvoicePage({
     >
       {/* Print Stylesheet */}
       <style>{`
+        /* The client wants every letter on the invoice in bold — heavy weight, and the
+           light-grey label colours darkened so the bold actually reads on screen and in print. */
+        .invoice-sheet, .invoice-sheet * {
+          font-weight: 800 !important;
+        }
+        .invoice-sheet .text-zinc-400,
+        .invoice-sheet .text-zinc-500,
+        .invoice-sheet .text-zinc-600,
+        .invoice-sheet .text-zinc-700 {
+          color: #18181b !important;
+        }
         @media print {
           @page {
             size: A4 portrait;
@@ -189,6 +233,7 @@ export default async function InvoicePage({
             customerPhone={order.customer_phone}
             grandTotal={grandTotalNum}
             isGst={order.is_gst}
+            autoPrint={resolvedSearchParams.autoprint === "1"}
           />
         </div>
       )}
@@ -242,7 +287,10 @@ export default async function InvoicePage({
               <div>
                 <span className="text-zinc-400">Payment: </span>
                 <span className="text-zinc-800 font-medium uppercase">
-                  {order.payment_mode} • {order.status}
+                  {order.split_mode_2
+                    ? `${order.payment_mode} ₹${(Number(order.split_amount_1) || 0).toLocaleString("en-IN", { minimumFractionDigits: 2 })} + ${order.split_mode_2} ₹${(Number(order.split_amount_2) || 0).toLocaleString("en-IN", { minimumFractionDigits: 2 })}`
+                    : order.payment_mode}{" "}
+                  • {order.status}
                 </span>
               </div>
               <div>
@@ -295,10 +343,10 @@ export default async function InvoicePage({
                 <th className="pb-3">Item Description</th>
                 <th className="pb-3 text-center w-12">Qty</th>
                 <th className="pb-3 text-right w-24">
-                  Rate (₹){order.is_gst && <span className="block text-[8px] font-normal normal-case tracking-normal text-zinc-400">incl. GST</span>}
+                  Rate (₹)
                 </th>
                 <th className="pb-3 text-right w-28">
-                  Amount (₹){order.is_gst && <span className="block text-[8px] font-normal normal-case tracking-normal text-zinc-400">incl. GST</span>}
+                  Amount (₹)
                 </th>
               </tr>
             </thead>
@@ -315,9 +363,25 @@ export default async function InvoicePage({
                       <div className="font-medium text-zinc-900">
                         {item.snapshot_name}
                       </div>
+                      {[item.product_description, item.product_description2]
+                        .map((d) => (d || "").trim())
+                        .filter(Boolean)
+                        .join(" - ") && (
+                        <div className="text-[11px] text-zinc-500 mt-0.5">
+                          {[item.product_description, item.product_description2]
+                            .map((d) => (d || "").trim())
+                            .filter(Boolean)
+                            .join(" - ")}
+                        </div>
+                      )}
                       {item.snapshot_serial && (
                         <div className="text-[11px] font-mono text-zinc-500 mt-0.5">
                           IMEI/SN: {item.snapshot_serial}
+                        </div>
+                      )}
+                      {item.batch_no && (
+                        <div className="text-[11px] font-mono text-zinc-500 mt-0.5">
+                          Batch: {item.batch_no}
                         </div>
                       )}
                     </td>
@@ -415,23 +479,16 @@ export default async function InvoicePage({
           {/* Right Side: Financial Breakdown */}
           <div className="w-full sm:w-64 space-y-2 text-xs">
             <div className="flex justify-between text-zinc-600">
-              <span>
-                Subtotal
-                {order.is_gst && (
-                  <span className="text-[9px] font-semibold text-zinc-400 uppercase ml-1">
-                    incl. GST
-                  </span>
-                )}
-              </span>
+              <span>Subtotal</span>
               <span className="font-mono text-zinc-900">
-                ₹{subtotalNum.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                ₹{money(subtotalNum - (legacyAddedGst ? gstAmountNum : 0))}
               </span>
             </div>
 
             {discountNum > 0 && (
               <div className="flex justify-between text-zinc-600">
                 <span>
-                  Discount {order.discount_type === "PERCENT" ? `(${order.discount_value}%)` : ""}
+                  Discount Applied {order.discount_type === "PERCENT" && Number(order.discount_value) ? `(${Number(order.discount_value)}%)` : ""}
                 </span>
                 <span className="font-mono text-zinc-900">
                   − ₹{discountNum.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
@@ -439,21 +496,43 @@ export default async function InvoicePage({
               </div>
             )}
 
-            {order.is_gst && gstAmountNum > 0 && (
+            {/* GST invoice: GST is already inside the prices — listed as CGST + SGST, total unchanged */}
+            {showIncludedGst && (
+              <>
+                <div className="pt-1 mt-1 border-t border-dashed border-zinc-200 text-[10px] text-zinc-500 uppercase tracking-wider">
+                  GST included in price
+                </div>
+                {gstRateRows.map((row) => (
+                  <div key={row.rate} className="space-y-2">
+                    <div className="flex justify-between text-zinc-600">
+                      <span>CGST ({fmtRate(row.rate)}%)</span>
+                      <span className="font-mono text-zinc-800">₹{money(row.gst / 2)}</span>
+                    </div>
+                    <div className="flex justify-between text-zinc-600">
+                      <span>SGST ({fmtRate(row.rate)}%)</span>
+                      <span className="font-mono text-zinc-800">₹{money(row.gst / 2)}</span>
+                    </div>
+                  </div>
+                ))}
+              </>
+            )}
+
+            {/* Older GST invoices: GST was added on top of the prices */}
+            {order.is_gst && gstAmountNum > 0 && legacyAddedGst && (
               <>
                 <div className="pt-1 mt-1 border-t border-dashed border-zinc-200 text-[10px] font-semibold text-zinc-400 uppercase tracking-wider">
-                  GST (included above)
+                  GST (added)
                 </div>
                 <div className="flex justify-between text-zinc-600">
                   <span>CGST ({halfGstRate.toFixed(1)}%)</span>
                   <span className="font-mono text-zinc-800">
-                    ₹{halfGstAmount.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    ₹{money(halfGstAmount)}
                   </span>
                 </div>
                 <div className="flex justify-between text-zinc-600">
                   <span>SGST ({halfGstRate.toFixed(1)}%)</span>
                   <span className="font-mono text-zinc-800">
-                    ₹{halfGstAmount.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    ₹{money(halfGstAmount)}
                   </span>
                 </div>
               </>

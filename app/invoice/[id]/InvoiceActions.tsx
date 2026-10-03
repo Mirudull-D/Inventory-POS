@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Printer, Copy, Check, MessageCircle, ArrowLeft } from "lucide-react";
 import Link from "next/link";
 
@@ -10,6 +10,7 @@ interface InvoiceActionsProps {
   customerPhone?: string;
   grandTotal: number;
   isGst?: boolean;
+  autoPrint?: boolean;
 }
 
 export function InvoiceActions({
@@ -18,8 +19,15 @@ export function InvoiceActions({
   customerPhone,
   grandTotal,
   isGst,
+  autoPrint,
 }: InvoiceActionsProps) {
   const [copied, setCopied] = useState(false);
+  // Opened from the POS "Print Receipt" flow: print straight away (A4).
+  useEffect(() => {
+    if (!autoPrint) return;
+    const t = setTimeout(() => window.print(), 500);
+    return () => clearTimeout(t);
+  }, [autoPrint]);
 
   const handleCopyLink = () => {
     if (typeof window !== "undefined") {
@@ -29,11 +37,7 @@ export function InvoiceActions({
     }
   };
 
-  const handlePrint = () => {
-    if (typeof window !== "undefined") {
-      window.print();
-    }
-  };
+  const handlePrint = () => window.print();
 
   const handleWhatsAppShare = () => {
     if (typeof window !== "undefined") {

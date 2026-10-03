@@ -19,6 +19,17 @@ import {
   AdvanceOrderStatus,
   AdvanceOrderWithRelations,
 } from './types';
+import { effectiveGstRate, gstInside } from './gst';
+
+// orders.bill_date is a Postgres DATE. The shop runs on India time, so turn whatever the client
+// sent (a plain YYYY-MM-DD, or a full ISO timestamp) into the IST calendar day. Casting a UTC ISO
+// string straight to DATE would give "yesterday" between 12:00 AM and 5:30 AM IST.
+const toShopBillDate = (value: string): string => {
+  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) return value;
+  const t = new Date(value).getTime();
+  if (isNaN(t)) return value;
+  return new Date(t + 5.5 * 60 * 60 * 1000).toISOString().slice(0, 10);
+};
 
 // Utility to generate a unique ID
 const uid = () => {
@@ -145,11 +156,11 @@ export const dbStore = {
     );
   },
 
-  async addProduct(input: { name: string; description: string | null; category: string; gst_rate: number; low_stock_threshold: number; tracks_serial?: boolean }): Promise<Product> {
+  async addProduct(input: { name: string; description: string | null; description2?: string | null; category: string; gst_rate: number; low_stock_threshold: number; tracks_serial?: boolean }): Promise<Product> {
     const id = uid();
     const rows = await sql`
-      INSERT INTO products (id, name, description, category, gst_rate, low_stock_threshold, tracks_serial)
-      VALUES (${id}, ${input.name}, ${input.description}, ${input.category}, ${input.gst_rate}, ${input.low_stock_threshold}, ${input.tracks_serial ?? false})
+      INSERT INTO products (id, name, description, description2, category, gst_rate, low_stock_threshold, tracks_serial)
+      VALUES (${id}, ${input.name}, ${input.description}, ${input.description2 ?? null}, ${input.category}, ${input.gst_rate}, ${input.low_stock_threshold}, ${input.tracks_serial ?? false})
       RETURNING *
     `;
     return rows[0] as Product;
@@ -161,6 +172,7 @@ export const dbStore = {
     // We update fields individually since dynamic SET with Neon SQL template tag is tricky
     if (patch.name !== undefined) await sql`UPDATE products SET name = ${patch.name} WHERE id = ${id}`;
     if (patch.description !== undefined) await sql`UPDATE products SET description = ${patch.description} WHERE id = ${id}`;
+    if (patch.description2 !== undefined) await sql`UPDATE products SET description2 = ${patch.description2} WHERE id = ${id}`;
     if (patch.category !== undefined) await sql`UPDATE products SET category = ${patch.category} WHERE id = ${id}`;
     if (patch.gst_rate !== undefined) await sql`UPDATE products SET gst_rate = ${patch.gst_rate} WHERE id = ${id}`;
     if (patch.low_stock_threshold !== undefined) await sql`UPDATE products SET low_stock_threshold = ${patch.low_stock_threshold} WHERE id = ${id}`;
@@ -300,7 +312,7 @@ export const dbStore = {
     const rows = await sql`
       INSERT INTO customers (id, name, phone, address)
       VALUES (${id}, ${name}, ${phone}, ${address || null})
-      ON CONFLICT (phone) DO UPDATE SET name = EXCLUDED.name, address = EXCLUDED.address
+      ON CONFLICT (phone) DO UPDATE SET address = COALESCE(EXCLUDED.address, customers.address)
       RETURNING *
     `;
     return rows[0] as Customer;
@@ -314,7 +326,7 @@ export const dbStore = {
 
   async listOrdersWithRelations(): Promise<OrderWithRelations[]> {
     const orders = await sql`
-      SELECT o.*, c.name as customer_name, c.phone as customer_phone, c.address as customer_address
+      SELECT o.*, COALESCE(o.customer_name, c.name) as customer_name, c.phone as customer_phone, c.address as customer_address
       FROM orders o
       JOIN customers c ON c.id = o.customer_id
       ORDER BY o.created_at DESC
@@ -337,7 +349,7 @@ export const dbStore = {
 
   async getOrderWithRelations(id: string): Promise<OrderWithRelations | null> {
     const orders = await sql`
-      SELECT o.*, c.name as customer_name, c.phone as customer_phone, c.address as customer_address
+      SELECT o.*, COALESCE(o.customer_name, c.name) as customer_name, c.phone as customer_phone, c.address as customer_address
       FROM orders o
       JOIN customers c ON c.id = o.customer_id
       WHERE o.id = ${id}
@@ -345,7 +357,16 @@ export const dbStore = {
     if (orders.length === 0) return null;
 
     const [items, gifts] = await Promise.all([
-      sql`SELECT * FROM order_items WHERE order_id = ${id}`,
+      sql`
+        SELECT oi.*,
+               b.batch_no AS batch_no,
+               p.description AS product_description,
+               p.description2 AS product_description2
+        FROM order_items oi
+        LEFT JOIN product_batches b ON b.id = oi.batch_id
+        LEFT JOIN products p ON p.id = oi.product_id
+        WHERE oi.order_id = ${id}
+      `,
       sql`SELECT * FROM order_gifts WHERE order_id = ${id}`,
     ]);
 
@@ -443,6 +464,11 @@ export const dbStore = {
     grandTotal: number;
     cashReceived: number;
     paymentMode: PaymentMode;
+    // Split payment (optional): when splitMode2 is set the bill is paid across two
+    // modes — paymentMode takes splitAmount1 and splitMode2 takes splitAmount2.
+    splitMode2?: PaymentMode | null;
+    splitAmount1?: number;
+    splitAmount2?: number;
     gifts?: { gift_id: string | null; name: string; price: number; quantity: number }[];
   }): Promise<{ orderId: string }> {
     // Neon HTTP doesn't natively support full interactive transactions in the simple API,
@@ -489,6 +515,7 @@ export const dbStore = {
           snapshot_name: item.name,
           snapshot_price: item.price,
           snapshot_serial: item.serial ?? null,
+          snapshot_gst_rate: item.gst_rate ?? null,
           quantity: 1,
         });
         continue;
@@ -503,6 +530,7 @@ export const dbStore = {
           snapshot_name: item.name,
           snapshot_price: item.price,
           snapshot_serial: null,
+          snapshot_gst_rate: item.gst_rate ?? null,
           quantity: item.qty,
         });
         continue;
@@ -527,6 +555,7 @@ export const dbStore = {
           snapshot_name: item.name,
           snapshot_price: Number(batch.selling_price),
           snapshot_serial: null,
+          snapshot_gst_rate: item.gst_rate ?? null,
           quantity: take,
         });
 
@@ -542,29 +571,32 @@ export const dbStore = {
           snapshot_name: item.name,
           snapshot_price: item.price,
           snapshot_serial: null,
+          snapshot_gst_rate: item.gst_rate ?? null,
           quantity: remaining,
         });
       }
     }
 
-    // Subtotal is GST-inclusive (sum of line prices × qty).
-    // grand_total = subtotal - discount + delivery  (GST is embedded in subtotal).
+    // Prices are GST-inclusive, so subtotal is simply the sum of line prices × qty and
+    // grand_total = subtotal - discount + delivery. gst_amount is the GST already contained in
+    // that total (shown as CGST + SGST on the invoice) — it is never added on top.
     const subtotalInclusive = payload.grandTotal + payload.discountAmount - payload.deliveryFee;
 
     // Insert order & execute all batch stock deductions concurrently
     await Promise.all([
       sql`
         INSERT INTO orders (
-          id, customer_id, source, status, is_gst, subtotal, discount_type, discount_value,
+          id, customer_id, customer_name, source, status, is_gst, subtotal, discount_type, discount_value,
           discount_amount, gst_percentage, gst_amount, delivery_fee, grand_total,
-          cash_received, payment_mode, bill_date, created_at
+          cash_received, payment_mode, split_mode_2, split_amount_1, split_amount_2, bill_date, created_at
         ) VALUES (
-          ${payload.orderId}, ${customer.id}, ${payload.source}, 'COMPLETED', ${payload.isGst},
+          ${payload.orderId}, ${customer.id}, ${payload.customerName}, ${payload.source}, 'COMPLETED', ${payload.isGst},
           ${subtotalInclusive},
           ${payload.discountType}, ${payload.discountValue}, ${payload.discountAmount},
           ${payload.gstPercentage}, ${payload.gstAmount}, ${payload.deliveryFee},
           ${payload.grandTotal}, ${payload.cashReceived}, ${payload.paymentMode},
-          ${payload.billDate}, now()
+          ${payload.splitMode2 ?? null}, ${payload.splitAmount1 ?? 0}, ${payload.splitAmount2 ?? 0},
+          ${toShopBillDate(payload.billDate)}, now()
         )
       `,
       ...batchUpdates.map((u) =>
@@ -578,10 +610,12 @@ export const dbStore = {
       ...finalOrderItems.map((oi) =>
         sql`
           INSERT INTO order_items (
-            id, order_id, product_id, batch_id, unit_id, snapshot_name, snapshot_price, snapshot_serial, quantity
+            id, order_id, product_id, batch_id, unit_id, snapshot_name, snapshot_price, snapshot_serial,
+            snapshot_gst_rate, quantity
           ) VALUES (
             ${uid()}, ${oi.order_id}, ${oi.product_id}, ${oi.batch_id}, ${oi.unit_id},
-            ${oi.snapshot_name}, ${oi.snapshot_price}, ${oi.snapshot_serial}, ${oi.quantity}
+            ${oi.snapshot_name}, ${oi.snapshot_price}, ${oi.snapshot_serial},
+            ${oi.snapshot_gst_rate ?? null}, ${oi.quantity}
           )
         `
       ),
@@ -608,7 +642,7 @@ export const dbStore = {
   // happens only when the balance is collected and finalizeAdvanceOrder runs.
   async listAdvanceOrders(): Promise<AdvanceOrderWithRelations[]> {
     const rows = await sql`
-      SELECT a.*, c.name AS customer_name, c.phone AS customer_phone, c.address AS customer_address
+      SELECT a.*, COALESCE(a.customer_name, c.name) AS customer_name, c.phone AS customer_phone, c.address AS customer_address
       FROM advance_orders a
       JOIN customers c ON c.id = a.customer_id
       ORDER BY a.created_at DESC
@@ -628,7 +662,7 @@ export const dbStore = {
 
   async getAdvanceOrder(id: string): Promise<AdvanceOrderWithRelations | null> {
     const rows = await sql`
-      SELECT a.*, c.name AS customer_name, c.phone AS customer_phone, c.address AS customer_address
+      SELECT a.*, COALESCE(a.customer_name, c.name) AS customer_name, c.phone AS customer_phone, c.address AS customer_address
       FROM advance_orders a
       JOIN customers c ON c.id = a.customer_id
       WHERE a.id = ${id}
@@ -654,6 +688,11 @@ export const dbStore = {
     depositPaymentMode: PaymentMode;
     deliveryDate: string | null;
     notes: string | null;
+    isGst?: boolean;
+    gstPercentage?: number;
+    discountType?: 'PERCENT' | 'FIXED';
+    discountValue?: number;
+    discountAmount?: number;
     items: {
       product_id: string | null;
       snapshot_name: string;
@@ -670,12 +709,16 @@ export const dbStore = {
 
     await sql`
       INSERT INTO advance_orders (
-        id, customer_id, status, subtotal, total_amount, deposit_amount,
-        deposit_payment_mode, delivery_date, notes
+        id, customer_id, customer_name, status, subtotal, total_amount, deposit_amount,
+        deposit_payment_mode, delivery_date, notes, is_gst, gst_percentage,
+        discount_type, discount_value, discount_amount
       ) VALUES (
-        ${payload.advanceOrderId}, ${customer.id}, 'PENDING',
+        ${payload.advanceOrderId}, ${customer.id}, ${payload.customerName}, 'PENDING',
         ${payload.subtotal}, ${payload.totalAmount}, ${payload.depositAmount},
-        ${payload.depositPaymentMode}, ${payload.deliveryDate}, ${payload.notes}
+        ${payload.depositPaymentMode}, ${payload.deliveryDate}, ${payload.notes},
+        ${Boolean(payload.isGst)}, ${payload.isGst ? payload.gstPercentage ?? 0 : 0},
+        ${(payload.discountAmount ?? 0) > 0 ? payload.discountType ?? 'FIXED' : null},
+        ${payload.discountValue ?? 0}, ${payload.discountAmount ?? 0}
       )
     `;
 
@@ -730,6 +773,17 @@ export const dbStore = {
     if (advance.status === 'COMPLETED') throw new Error('Advance order already finalized');
     if (advance.status === 'CANCELLED') throw new Error('Advance order was cancelled');
 
+    // Each product's own GST rate (saved with the product), so the invoice can split GST per rate.
+    // Custom lines with no product fall back to the rate chosen at collection.
+    const pct = payload.isGst ? payload.gstPercentage : 0;
+    const advProductIds = Array.from(
+      new Set(advance.items.filter((it) => it.product_id).map((it) => it.product_id as string)),
+    );
+    const rateRows = advProductIds.length
+      ? ((await sql`SELECT id, gst_rate FROM products WHERE id = ANY(${advProductIds})`) as { id: string; gst_rate: number | string }[])
+      : [];
+    const rateByProduct = new Map(rateRows.map((r) => [r.id, Number(r.gst_rate) || 0]));
+
     // Rebuild cart from the stored snapshot items.
     const cart: CartItem[] = advance.items.map((it) => ({
       id: it.id,
@@ -741,16 +795,34 @@ export const dbStore = {
       desc: it.snapshot_desc || '',
       price: Number(it.snapshot_price),
       qty: it.quantity,
+      gst_rate: payload.isGst ? (it.product_id ? rateByProduct.get(it.product_id) ?? pct : pct) : 0,
     }));
 
-    // Grand total math mirrors POSBilling.completeSale (GST-inclusive subtotal).
-    const rawSubtotal = cart.reduce((acc, i) => acc + i.price * i.qty, 0);
-    const netInclusive = Math.max(0, rawSubtotal - payload.discountAmount);
-    const gstAmount =
-      payload.isGst && payload.gstPercentage > 0
-        ? netInclusive - netInclusive / (1 + payload.gstPercentage / 100)
-        : 0;
-    const grandTotal = netInclusive + payload.deliveryFee;
+    // Start from the total agreed when the order was booked (booking discount/delivery included),
+    // then apply the discount given at collection. Prices are GST-inclusive: GST is never added
+    // on top, it is only the portion already contained in the agreed total.
+    const agreedTotal = Number(advance.total_amount) || 0;
+    const net = Math.max(0, agreedTotal - payload.discountAmount);
+
+    // The discount given when the order was booked is already inside agreedTotal; carry it onto the
+    // invoice so the "Discount Applied" line shows (plus any discount given at collection).
+    const bookingDiscount = Number(advance.discount_amount) || 0;
+    const totalDiscount = bookingDiscount + payload.discountAmount;
+    let invoiceDiscountType: 'PERCENT' | 'FIXED' = payload.discountType;
+    let invoiceDiscountValue = payload.discountValue;
+    if (bookingDiscount > 0 && payload.discountAmount > 0) {
+      invoiceDiscountType = 'FIXED';
+      invoiceDiscountValue = totalDiscount;
+    } else if (bookingDiscount > 0) {
+      invoiceDiscountType = advance.discount_type === 'PERCENT' ? 'PERCENT' : 'FIXED';
+      invoiceDiscountValue = Number(advance.discount_value) || bookingDiscount;
+    }
+    // GST on the actual (pre-discount) line prices, summed per line at each product's own rate.
+    const linesTotal = cart.reduce((acc, c) => acc + c.price * c.qty, 0);
+    const gstAmount = payload.isGst
+      ? cart.reduce((acc, c) => acc + gstInside(c.price * c.qty, c.gst_rate ?? 0), 0)
+      : 0;
+    const grandTotal = net + payload.deliveryFee;
 
     const { orderId } = await this.submitOrder({
       orderId: payload.invoiceId,
@@ -761,10 +833,10 @@ export const dbStore = {
       isGst: payload.isGst,
       billDate: payload.billDate,
       items: cart,
-      discountType: payload.discountType,
-      discountValue: payload.discountValue,
-      discountAmount: payload.discountAmount,
-      gstPercentage: payload.isGst ? payload.gstPercentage : 0,
+      discountType: invoiceDiscountType,
+      discountValue: invoiceDiscountValue,
+      discountAmount: totalDiscount,
+      gstPercentage: effectiveGstRate(linesTotal, gstAmount),
       gstAmount,
       deliveryFee: payload.deliveryFee,
       grandTotal,

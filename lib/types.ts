@@ -8,6 +8,7 @@ export type Product = {
   id: string;
   name: string;
   description: string | null;
+  description2: string | null; // Optional second description; shown hyphen-joined with description
   category: string;
   gst_rate: number; // Default GST % for this product (editable at billing)
   low_stock_threshold: number;
@@ -68,11 +69,16 @@ export type OrderRow = {
   discount_value: number;
   discount_amount: number;
   gst_percentage: number;
-  gst_amount: number; // GST inside subtotal-discount (derived)
+  gst_amount: number; // GST contained inside subtotal-discount (price is GST-inclusive, so it is never added on top)
   delivery_fee: number;
   grand_total: number; // = subtotal - discount + delivery
   cash_received: number;
-  payment_mode: PaymentMode;
+  payment_mode: PaymentMode; // primary mode; for a split this is the FIRST mode
+  // Split payment: when split_mode_2 is set, the bill was paid across two modes —
+  // payment_mode receives split_amount_1 and split_mode_2 receives split_amount_2.
+  split_mode_2: PaymentMode | null;
+  split_amount_1: number;
+  split_amount_2: number;
   bill_date: string;
   created_at: string;
 };
@@ -86,7 +92,12 @@ export type OrderItemRow = {
   snapshot_name: string;
   snapshot_price: number;
   snapshot_serial: string | null; // IMEI / serial sold, frozen at time of sale
+  snapshot_gst_rate?: number | null; // GST % this line was sold at (price is GST-inclusive); null on old orders
   quantity: number;
+  // Populated via JOIN for the invoice (not stored on the row itself).
+  batch_no?: string | null; // batch number of the batch this line was sold from
+  product_description?: string | null;
+  product_description2?: string | null;
 };
 
 // Free add-on given with a bill. Price is informational only — never part of
@@ -138,6 +149,12 @@ export type AdvanceOrderRow = {
   deposit_payment_mode: PaymentMode;
   delivery_date: string | null;
   notes: string | null;
+  is_gst?: boolean;
+  gst_percentage?: number | string;
+  // Discount given when the order was booked (already taken off total_amount).
+  discount_type?: 'PERCENT' | 'FIXED' | null;
+  discount_value?: number | string;
+  discount_amount?: number | string;
   finalized_order_id: string | null;
   finalized_at: string | null;
   cancelled_at: string | null;
@@ -169,6 +186,7 @@ export type CartItem = {
   serial?: string | null; // its IMEI / serial, for snapshotting
   name: string;
   desc: string;
-  price: number;
+  price: number; // GST-inclusive selling price
   qty: number;
+  gst_rate?: number; // GST % of the product (carved out of price on a GST invoice)
 };
